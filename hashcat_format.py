@@ -75,13 +75,12 @@ def argument_parser() -> argparse.Namespace:
                                            'sha3_224, sha3_256, sha3_384, sha3_512, '\
                                            'blake2b, blake2s, md5')
     argument_group_hash = argument_group_hash_wrapper.add_mutually_exclusive_group()
-    argument_group_hash.add_argument('-u', '--hash-upper',
-                                    action='store_true',
-                                    default=True,
-                                    help='Output the hash value in UPPERCASE (default)')
     argument_group_hash.add_argument('-l', '--hash-lower',
                                     action='store_true',
                                     help='Output the hash value in lowercase')
+    argument_group_hash.add_argument('-u', '--hash-upper',
+                                    action='store_true',
+                                    help='Output the hash value in UPPERCASE (default)')
     # CONSOLE OUTPUT
     argument_group_verbosity_parent =  arg_parser.add_argument_group('Output Verbosity')
     argument_group_verbosity = argument_group_verbosity_parent.add_mutually_exclusive_group()
@@ -94,43 +93,47 @@ def argument_parser() -> argparse.Namespace:
     script_arguments= arg_parser.parse_args()
     return script_arguments
 
-def hash_string(text_string: str, hash_type: str = "sha1") -> str:
+def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool = False) -> str:
     """
     Returns a hex hash based on the hash_type and text_string provided
     """
     match hash_type:
         case "sha1":
-            return hashlib.sha1(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha1(text_string.encode()).hexdigest()
         case "sha224":
-            return hashlib.sha224(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha224(text_string.encode()).hexdigest()
         case "sha256":
-            return hashlib.sha256(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha256(text_string.encode()).hexdigest()
         case "sha384":
-            return hashlib.sha384(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha384(text_string.encode()).hexdigest()
         case "sha512":
-            return hashlib.sha512(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha512(text_string.encode()).hexdigest()
         case "sha3_224":
-            return hashlib.sha3_224(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha3_224(text_string.encode()).hexdigest()
         case "sha3_256":
-            return hashlib.sha3_256(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha3_256(text_string.encode()).hexdigest()
         case "sha3_384":
-            return hashlib.sha3_384(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha3_384(text_string.encode()).hexdigest()
         case "sha3_512":
-            return hashlib.sha3_512(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.sha3_512(text_string.encode()).hexdigest()
         # Shake requires an unknown length argument
         #case "shake_128":
-        #    return hashlib.shake_128(text_string.encode()).hexdigest().upper()
+        #    return_value = hashlib.shake_128(text_string.encode()).hexdigest()
         #case "shake_256":
-        #    return hashlib.shake_256(text_string.encode()).hexdigest().upper()
+        #    return_value = hashlib.shake_256(text_string.encode()).hexdigest()
         case "blake2b":
-            return hashlib.blake2b(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.blake2b(text_string.encode()).hexdigest()
         case "blake2s":
-            return hashlib.blake2s(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.blake2s(text_string.encode()).hexdigest()
         case "md5":
-            return hashlib.md5(text_string.encode()).hexdigest().upper()
+            return_value = hashlib.md5(text_string.encode()).hexdigest()
         case _:
             print(f"hash type: {hash_type}, not supported, exiting.")
             exit(-1)
+    if hash_uppercase:
+        return return_value.upper()
+    else:
+        return return_value
 
 def main() -> int:
     """
@@ -173,9 +176,12 @@ def main() -> int:
                 if input_line_hash ==  hash_string(decoded_clear,script_arguments.hash_algorithm):
                     cleartext_result = decoded_clear
                 else:
-                    if script_arguments.quiet is not True:
-                        print(f"ERROR: hash mismatch, line #{fileinput.lineno()} skipped: {input_line[0:-1]}",\
+                    if script_arguments.verbose is True:
+                        if script_arguments.output_file:
+                            print(f"ERROR: hash mismatch, line #{fileinput.lineno()} skipped: {input_line[0:-1]}",\
                                file=sys.stderr)
+                        else:
+                            print(f"ERROR: hash mismatch, line #{fileinput.lineno()} skipped: {input_line[0:-1]}")
                         counter_errors += 1
                     if script_arguments.error_file:
                         file_error.write(input_line)
@@ -236,7 +242,7 @@ def main() -> int:
     return
 
 #####################
-#  BEGIN PROCESSING #
+#  BEGIN PROCESSING :/#
 #####################
 if __name__ == '__main__':
     sys.exit(main())
