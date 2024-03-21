@@ -1,6 +1,7 @@
 {
     "cSpell.words": [
         "cleartext",
+        "getaffinity",
         "getpid",
         "hashcat",
         "surrogateescape"

@@ -16,12 +16,8 @@ import fileinput
 import hashlib
 import os
 import sys
+import multiprocessing
 import _mt_io_
-
-#############################
-#  DEFINE GLOBAL VARIABLES  #
-#############################
-
 
 ######################
 ## DEFINE FUNCTIONS ##
@@ -46,43 +42,6 @@ def append_files(_from: str, _to: str) -> int:
 def argument_parser() -> argparse.Namespace:
     """
     Parse shell arguments
-    Help return is:
-    -----------------
-    usage: hash_generator.py [-h] [-s SEPARATOR] [-n] [-i [FILE]] [-o OUTPUT_FILE] [-e ERROR_FILE] [-a HASH_ALGORITHMS]
-           [-l | -u] [-v | -q]
-
-    Translate a file of cleartext strings (passwords) to hashes
-        NOTE: The field separator may be in the cleartext
-        NOTE: Non-printable characters are retained in the output
-        NOTE: strings not valid in UTF-8 are skipped (see -e,-v,-q switches)
-
-    options:
-    -h, --help            show this help message and exit
-    -s SEPARATOR, --separator SEPARATOR
-                            The column separator to use in the output file if specified (default ':')
-    -n, --no-header       Do not print the header line
-
-    File Management:
-    -i [FILE], --input-file [FILE]
-                            The input file of strings to parse, if omitted STDIN is used
-    -o OUTPUT_FILE, --output-file OUTPUT_FILE
-                            Output file, if omitted STDOUT is used
-    -e ERROR_FILE, --error-file ERROR_FILE
-                            Optional file to write lines that cannot be parsed
-
-    Hash:
-    -a HASH_ALGORITHMS, --hash-algorithms HASH_ALGORITHMS
-                            Comma separated Hash list to use (default: sha1) options are:
-                            sha1, sha224, sha256, sha384, sha512,
-                            sha3_224, sha3_256, sha3_384, sha3_512,
-                            blake2b, blake2s, md5
-    -l, --hash-lower      Output the hash value in lowercase (default)
-    -u, --hash-upper      Output the hash value in UPPERCASE
-
-    Output Verbosity:
-    -v, --verbose         Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)
-    -q, --quiet           Suppress all console output (STDOUT/STDERR)
-    -----------------
     """
     # Create argparse instance
     arg_parser = argparse.ArgumentParser(
@@ -101,8 +60,9 @@ def argument_parser() -> argparse.Namespace:
                                 help = "Do not print the header line")
     arg_parser.add_argument('-p', '--parallel',
                                 default = 1,
-                                help = "Number of parallel threads to use")
+                                help = "Number of parallel threads to use or 'a' for automatic detection")
     arg_parser.add_argument('-t', '--temp-directory',
+                                default="./",
                                 help = "Directory to use for temp files when --parallel is used default PWD)")
     # File Arguments
     argument_group_files = arg_parser.add_argument_group('File Management')
@@ -177,11 +137,36 @@ def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool 
             return_value = hashlib.md5(text_string.encode()).hexdigest()
         case _:
             print(f"hash type: {hash_type}, not supported, exiting.")
-            exit(-1)
+            sys.exit(-1)
     if hash_uppercase:
         return return_value.upper()
     else:
         return return_value
+
+def hash_chunk_printonly(chunk_number: int,
+               file_name: str,
+               chunk_start: int,
+               chunk_end: int,
+               hash_list: str,
+               hash_upper: bool = False,
+               separator: str = ":",
+               temp_path: str = "./",
+               log_errors: bool = False,
+               verbose: bool = False
+               ):
+    """ docstring
+    stupid placeholder to test line duplication
+    """
+    temp_path = os.path.abspath(temp_path)
+    os.makedirs(temp_path,exist_ok=True)
+    with open(file_name, mode='r', encoding='utf8') as file_input, \
+         open(f"{temp_path}/{os.getpid()}_{chunk_number}.dat", mode='w', encoding='utf8') as file_temp:
+        file_input.seek(chunk_start)
+        for input_line in file_input:
+            chunk_start += len(input_line)
+            if chunk_start > chunk_end: # exit at end of chunk
+                break
+            print(input_line[0:-1], file=file_temp)
 
 def hash_chunk(chunk_number: int,
                file_name: str,
@@ -205,12 +190,9 @@ def hash_chunk(chunk_number: int,
         # open files
         temp_path = os.path.abspath(temp_path)
         os.makedirs(temp_path,exist_ok=True)
-        with open(file_name,
-                  mode='r', encoding='utf8', errors='surrogateescape') as file_input, \
-             open(f"{temp_path}/{os.getpid()}_{chunk_number}.dat",
-                  mode='w', encoding='utf8', errors='surrogateescape') as file_temp, \
-             open(f"{temp_path}/{os.getpid()}_{chunk_number}.err",
-                  mode='w', encoding='utf8', errors='surrogateescape') as file_temp_err:
+        with open(file_name, mode='r', encoding='utf8') as file_input, \
+             open(f"{temp_path}/{os.getpid()}_{chunk_number}.dat", mode='w', encoding='utf8') as file_temp, \
+             open(f"{temp_path}/{os.getpid()}_{chunk_number}.err", mode='w', encoding='utf8') as file_temp_err:
 
             # record temp files with sequence number
             temp_file_path = f"{temp_path}/{os.getpid()}_{chunk_number}.dat"
@@ -234,13 +216,14 @@ def hash_chunk(chunk_number: int,
                     counter_success += 1
                 except IOError as err:
                     if verbose:
-                        print(f"ERROR: line #{str(fileinput.lineno())} skipped: {input_line[0:-1]}", file=sys.stderr)
+                        print(f"ERROR: {input_line[0:-1]}", file=sys.stderr)
                         print("    Details: ", end='', file=sys.stderr)
                         print(Exception, err, file=sys.stderr)
                     if log_errors:
                         file_temp_err.write(input_line)
                     counter_warning += 1
-        return [chunk_number, temp_file_path, temp_err_file_path, counter_success, counter_warning]
+        results = [chunk_number, temp_file_path, temp_err_file_path, counter_success, counter_warning]
+        return results
     except IOError:
         return -1
 
@@ -265,6 +248,19 @@ def main() -> int:
             print(f"hash type: {hash_name}, not supported, exiting.")
             exit(-1)
 
+    # process threading argument
+    if script_arguments.parallel:
+        if not str(script_arguments.parallel).isnumeric() and str(script_arguments.parallel).lower() == 'a':
+            script_arguments.parallel = os.cpu_count()
+            if script_arguments.parallel is None or script_arguments.parallel > len(os.sched_getaffinity(0)):
+                script_arguments.parallel = 1
+        if str(script_arguments.parallel).isnumeric():
+            script_arguments.parallel = int(script_arguments.parallel)
+        if str(script_arguments.parallel).isnumeric() \
+           and script_arguments.parallel < 1 \
+           and script_arguments.parallel > len(os.sched_getaffinity(0)):
+            script_arguments.parallel = 1
+
     if script_arguments.verbose:
         if script_arguments.output_file:
             print(f"The following hashes were selected: {hash_list}")
@@ -274,10 +270,68 @@ def main() -> int:
     ################################
     # run hashing on chunk or file #
     ################################
-    if script_arguments.parallel > 1 and not fileinput.input(files=script_arguments.input_file).isstdin():
+    #check for parallel argument and input file (not STDIN)
+    if script_arguments.parallel > 1 \
+       and script_arguments.output_file \
+       and not fileinput.input(files=script_arguments.input_file).isstdin():
+
+        # assign variables
+        if script_arguments.error_file:
+            log_errors = True
+        else:
+            log_errors = False
+
         # process and collect results
-        results = [] # [chunk_number, temp_file_path, temp_err_file_path, counter_success, counter_warning]
         print("multi-threaded baby!")
+        chunk_details = _mt_io_.chunk_file(script_arguments.input_file, script_arguments.parallel)
+            #  contents [Chunk_number, file_path, start_position, end_position]
+        print(*chunk_details, sep='\n')
+
+        for chunk in chunk_details:
+            chunk += [hash_list,
+                      script_arguments.hash_upper is True,
+                      script_arguments.separator,
+                      script_arguments.temp_directory,
+                      log_errors,
+                      script_arguments.verbose]
+        with multiprocessing.Pool(script_arguments.parallel) as pool:
+            # run chunks in parallel
+            #chunk_results = pool.starmap(hash_chunk, chunk_details)
+            chunk_results = pool.starmap(hash_chunk_printonly, chunk_details)
+                # content [chunk_number, temp_file_path, temp_err_file_path, counter_success, counter_warning]
+
+        # output header line
+        if script_arguments.no_header is not True:
+            with open(script_arguments.output_file, mode='w', encoding='utf8', errors='surrogateescape') as file_output:
+                print(*hash_list, "clear", sep=script_arguments.separator, file=file_output)
+
+        # merge and output results
+        chunk_results.sort()
+        for result in chunk_results:
+            append_files(result[1], script_arguments.output_file)
+
+        if script_arguments.error_file:
+            for result in chunk_results:
+                append_files(result[2], script_arguments.error_file)
+
+        # remove temp files
+        for chunk in chunk_results:
+            if os.access(chunk[1], os.W_OK): # temp file
+                os.remove(chunk[1])
+            if os.access(chunk[2], os.W_OK): # temp error file
+                os.remove(chunk[2])
+            if not script_arguments.temp_directory == './':
+                temp_path = os.path.abspath(script_arguments.temp_directory)
+                if len(os.listdir(temp_path)) == 0: # empty temp directory
+                    os.rmdir(temp_path)
+        success_lines = 0
+        warning_lines = 0
+        for chunk in chunk_results:
+            success_lines += chunk[3]
+            warning_lines += chunk[4]
+        print(*chunk_results, sep='\n')
+        print(f"successfully processed: {success_lines} lines")
+        print(f"              warnings: {warning_lines} lines")
     else:
         print("Boo, no threading!")
         if script_arguments.output_file:
@@ -286,6 +340,16 @@ def main() -> int:
             file_error = open(script_arguments.error_file, mode='a', encoding='utf8', errors='surrogateescape')
         for input_line in fileinput.input(files=script_arguments.input_file):
             try:
+                # output header line
+                if script_arguments.no_header is not True:
+                    if script_arguments.output_file:
+                        with open(script_arguments.output_file, mode='w', encoding='utf8', errors='surrogateescape') \
+                          as file_output:
+                            print(*hash_list, "clear", sep=script_arguments.separator, file=file_output)
+                    else:
+                        print(*hash_list, "clear", sep=script_arguments.separator)
+
+                # output results
                 result_line=""
                 for hash_name in hash_list:
                     if script_arguments.hash_upper:
@@ -316,41 +380,25 @@ def main() -> int:
 
 
 
-    #######################################
-    # merge temp files and display output #
-    #######################################
-    # output header line
-    if script_arguments.no_header is not True:
-        if script_arguments.output_file:
-            print(*hash_list, "clear", sep=script_arguments.separator, file=file_output)
-        else:
-            print(*hash_list, "clear", sep=script_arguments.separator)
-    # merge and output results
-    results.sort() # [chunk_number, temp_file_path, temp_err_file_path, counter_success, counter_warning]
-    if script_arguments.output_file:
-        for result in results:
-            append_files(result[1], script_arguments.output_file)
-    else:
-        for result in results:
-            with open(result[1], mode='r', encoding='utf8', errors='surrogateescape') as temp_file:
-                for line in temp_file:
-                    print(line[0:-1])
-
-    if script_arguments.error_file:
-        for result in results:
-            append_files(result[2], script_arguments.error_file)
-
     # Cleanup and exit
-    if not file_output.closed:
-        file_output.close()
-    if not file_error.closed:
-        file_error.close()
-    if os.path.getsize(script_arguments.output_file) == 0:
-        os.remove(script_arguments.output_file)
-        print(f"No output to file ({script_arguments.output_file}), file deleted.")
-    if os.path.getsize(script_arguments.error_file) == 0:
-        os.remove(script_arguments.error_file)
-    return
+    try:
+        if file_output in locals():
+            if not file_output.closed:
+                file_output.close()
+        if file_error in locals():
+            if not file_error.closed:
+                file_error.close()
+        if os.path.getsize(script_arguments.output_file) == 0:
+            if os.access(script_arguments.output_file, os.W_OK):
+                os.remove(script_arguments.output_file)
+                print(f"No output to file ({script_arguments.output_file}), file deleted.")
+        if os.path.getsize(script_arguments.error_file) == 0:
+            if os.access(script_arguments.error_file, os.W_OK):
+                os.remove(script_arguments.error_file)
+    except UnboundLocalError:
+        pass
+
+    return 0
 
 #####################
 #  BEGIN PROCESSING #
