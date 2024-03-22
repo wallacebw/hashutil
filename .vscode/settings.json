@@ -1,9 +1,12 @@
 {
     "cSpell.words": [
+        "chunksize",
         "cleartext",
         "getaffinity",
         "getpid",
         "hashcat",
-        "surrogateescape"
+        "rling",
+        "surrogateescape",
+        "tqdm"
     ]
 }

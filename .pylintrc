@@ -1,3 +1,4 @@
 [FORMAT]
 max-line-length=120
 disable=c0103
+disable=W0212

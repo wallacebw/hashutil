@@ -17,7 +17,10 @@ import hashlib
 import os
 import sys
 import multiprocessing
+import time
 import _mt_io_
+
+
 
 ######################
 ## DEFINE FUNCTIONS ##
@@ -101,6 +104,22 @@ def argument_parser() -> argparse.Namespace:
                                         help="Suppress all console output (STDOUT/STDERR)")
     return arg_parser.parse_args()
 
+def count_lines(file: str) -> int:
+    """
+    Count number of lines in a file
+    """
+    def blocks(files, size=1048576):
+        while True:
+            b = files.read(size)
+            if not b:
+                break
+            yield b
+
+    with open(file, "r", encoding="utf-8", errors='ignore') as f:
+        line_count = (sum(bl.count("\n") for bl in blocks(f)))
+    return line_count
+
+
 def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool = False) -> str:
     """
     Returns a hex hash based on the hash_type and text_string provided
@@ -143,31 +162,6 @@ def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool 
     else:
         return return_value
 
-def hash_chunk_printonly(chunk_number: int,
-               file_name: str,
-               chunk_start: int,
-               chunk_end: int,
-               hash_list: str,
-               hash_upper: bool = False,
-               separator: str = ":",
-               temp_path: str = "./",
-               log_errors: bool = False,
-               verbose: bool = False
-               ):
-    """ docstring
-    stupid placeholder to test line duplication
-    """
-    temp_path = os.path.abspath(temp_path)
-    os.makedirs(temp_path,exist_ok=True)
-    with open(file_name, mode='r', encoding='utf8') as file_input, \
-         open(f"{temp_path}/{os.getpid()}_{chunk_number}.dat", mode='w', encoding='utf8') as file_temp:
-        file_input.seek(chunk_start)
-        for input_line in file_input:
-            chunk_start += len(input_line)
-            if chunk_start > chunk_end: # exit at end of chunk
-                break
-            print(input_line[0:-1], file=file_temp)
-
 def hash_chunk(chunk_number: int,
                file_name: str,
                chunk_start: int,
@@ -190,7 +184,7 @@ def hash_chunk(chunk_number: int,
         # open files
         temp_path = os.path.abspath(temp_path)
         os.makedirs(temp_path,exist_ok=True)
-        with open(file_name, mode='r', encoding='utf8') as file_input, \
+        with open(file_name, mode='r', encoding='utf-8', errors='surrogateescape') as file_input, \
              open(f"{temp_path}/{os.getpid()}_{chunk_number}.dat", mode='w', encoding='utf8') as file_temp, \
              open(f"{temp_path}/{os.getpid()}_{chunk_number}.err", mode='w', encoding='utf8') as file_temp_err:
 
@@ -212,7 +206,7 @@ def hash_chunk(chunk_number: int,
                         else:
                             result_line += hash_string(input_line[0:-1], hash_name, False) + separator
                     result_line += input_line[0:-1]
-                    print(result_line, file=file_temp)
+                    print(result_line.encode(errors='surrogateescape'), file=file_temp)
                     counter_success += 1
                 except IOError as err:
                     if verbose:
@@ -220,12 +214,21 @@ def hash_chunk(chunk_number: int,
                         print("    Details: ", end='', file=sys.stderr)
                         print(Exception, err, file=sys.stderr)
                     if log_errors:
-                        file_temp_err.write(input_line)
+                        file_temp_err.write(input_line.encode(errors='surrogateescape'))
                     counter_warning += 1
         results = [chunk_number, temp_file_path, temp_err_file_path, counter_success, counter_warning]
         return results
     except IOError:
         return -1
+
+def track_jobs(job: multiprocessing.Pool, update_interval: int = 1, message_prefix: str = "Tasks remaining: "):
+    """
+    Track the status of running multi-process async pools
+    """
+    while job._number_left > 0:
+        print(f"\r{message_prefix}{job._number_left * job._chunksize}     ", end="")
+        time.sleep(update_interval)
+    print(f"\r{message_prefix}0     ")
 
 def main() -> int:
     """
@@ -236,7 +239,8 @@ def main() -> int:
     "sha1", "sha224", "sha256", "sha284", "sha512", #SHA
     "sha3_224", "sha3_384", "sha3_512", # SHA3
     "blake2b", "blake2s", "md5" # Misc
-]
+    ]
+
     # Parse arguments
     script_arguments = argument_parser()
 
@@ -274,6 +278,10 @@ def main() -> int:
     if script_arguments.parallel > 1 \
        and script_arguments.output_file \
        and not fileinput.input(files=script_arguments.input_file).isstdin():
+        # count lines in source file
+        print(f"Counting lines in '{os.path.basename(script_arguments.input_file)}': ", end='', flush=True)
+        input_file_lines = count_lines(script_arguments.input_file)
+        print(input_file_lines)
 
         # assign variables
         if script_arguments.error_file:
@@ -282,11 +290,16 @@ def main() -> int:
             log_errors = False
 
         # process and collect results
-        print("multi-threaded baby!")
+        if input_file_lines > script_arguments.parallel * 2:
+            chunk_details = _mt_io_.chunk_file(script_arguments.input_file, script_arguments.parallel * 2)
+        elif input_file_lines > script_arguments.parallel:
+            chunk_details = _mt_io_.chunk_file(script_arguments.input_file, script_arguments.parallel)
+        else:
+            chunk_details = _mt_io_.chunk_file(script_arguments.input_file, input_file_lines)
+
+
         chunk_details = _mt_io_.chunk_file(script_arguments.input_file, script_arguments.parallel)
             #  contents [Chunk_number, file_path, start_position, end_position]
-        print(*chunk_details, sep='\n')
-
         for chunk in chunk_details:
             chunk += [hash_list,
                       script_arguments.hash_upper is True,
@@ -294,46 +307,74 @@ def main() -> int:
                       script_arguments.temp_directory,
                       log_errors,
                       script_arguments.verbose]
-        with multiprocessing.Pool(script_arguments.parallel) as pool:
-            # run chunks in parallel
-            #chunk_results = pool.starmap(hash_chunk, chunk_details)
-            chunk_results = pool.starmap(hash_chunk_printonly, chunk_details)
+
+        # print("\nCreating hashes (file segments processed):")
+
+        with multiprocessing.Pool(processes=script_arguments.parallel) as thread_pool:
+            thread_results = thread_pool.starmap_async(hash_chunk, chunk_details, chunksize=1)
+            track_jobs(thread_results, message_prefix = "Creating hashes - Jobs remaining: ")
+            chunk_results = thread_results.get()
+
+
+        #with multiprocessing.Pool(script_arguments.parallel) as pool:
+        #    chunk_results = pool.starmap(hash_chunk, chunk_details)
                 # content [chunk_number, temp_file_path, temp_err_file_path, counter_success, counter_warning]
 
         # output header line
+
         if script_arguments.no_header is not True:
             with open(script_arguments.output_file, mode='w', encoding='utf8', errors='surrogateescape') as file_output:
                 print(*hash_list, "clear", sep=script_arguments.separator, file=file_output)
 
+
         # merge and output results
-        chunk_results.sort()
-        for result in chunk_results:
+        for i, result in enumerate(chunk_results):
+            print(f"\rMerging temporary files: {len(chunk_results) - i} remaining     ", end="")
             append_files(result[1], script_arguments.output_file)
+            if os.access(result[1], os.W_OK): # temp file
+                os.remove(result[1])
+        print("\rMerging temporary files: 0 remaining   ")
 
         if script_arguments.error_file:
-            for result in chunk_results:
+            for i, result in enumerate(chunk_results):
+                print(f"\rMerging temporary error files: {len(chunk_results) - i} remaining     ", end="")
                 append_files(result[2], script_arguments.error_file)
+                if os.access(result[2], os.W_OK): # temp error file
+                    os.remove(result[2])
+            print("\rMerging temporary error files: 0 remaining   ")
 
-        # remove temp files
-        for chunk in chunk_results:
-            if os.access(chunk[1], os.W_OK): # temp file
-                os.remove(chunk[1])
-            if os.access(chunk[2], os.W_OK): # temp error file
-                os.remove(chunk[2])
-            if not script_arguments.temp_directory == './':
-                temp_path = os.path.abspath(script_arguments.temp_directory)
-                if len(os.listdir(temp_path)) == 0: # empty temp directory
-                    os.rmdir(temp_path)
+        if not script_arguments.temp_directory == './':
+            temp_path = os.path.abspath(script_arguments.temp_directory)
+            if len(os.listdir(temp_path)) == 0: # empty temp directory
+                os.rmdir(temp_path)
+
+
         success_lines = 0
         warning_lines = 0
         for chunk in chunk_results:
             success_lines += chunk[3]
             warning_lines += chunk[4]
-        print(*chunk_results, sep='\n')
-        print(f"successfully processed: {success_lines} lines")
-        print(f"              warnings: {warning_lines} lines")
+        print("Results:")
+
+        if success_lines == input_file_lines:
+            print(f"      Input lines: {input_file_lines}")
+            print(f"    skipped lines: {warning_lines}")
+            print(f"     Output lines: {success_lines}")
+        else:
+            print(f"      Input lines: {input_file_lines}")
+            print(f"    skipped lines: {warning_lines}")
+            print(f"     Output lines: {success_lines}")
+            print("======================================================")
+            print("WARNING: Result count does not match input file lines!")
+            if success_lines > input_file_lines:
+                print(f"Note: {success_lines - input_file_lines} more output lines than input file lines:")
+                print("      Your input file may contain UTF-8 characters causing duplicate result lines")
+                print("      such as control characters or characters with right-to-left printing ex: arabic")
+                print("      Consider processing without multithreading (--parallel / -r)")
+                print("      Alternately clean input file or remove duplicate lines from output file. ex:")
+                print("         [sort --unique] sorted deduplicated output")
+                print("         [rli or rling] unsorted deduplicated output")
     else:
-        print("Boo, no threading!")
         if script_arguments.output_file:
             file_output = open(script_arguments.output_file, 'w', encoding='utf8', errors='surrogateescape')
         if script_arguments.error_file:
