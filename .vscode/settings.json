@@ -5,6 +5,7 @@
         "getaffinity",
         "getpid",
         "hashcat",
+        "hashgen",
         "rling",
         "surrogateescape",
         "tqdm"

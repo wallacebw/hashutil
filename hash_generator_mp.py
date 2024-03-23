@@ -296,10 +296,7 @@ def main() -> int:
             chunk_details = _mt_io_.chunk_file(script_arguments.input_file, script_arguments.parallel)
         else:
             chunk_details = _mt_io_.chunk_file(script_arguments.input_file, input_file_lines)
-
-
-        chunk_details = _mt_io_.chunk_file(script_arguments.input_file, script_arguments.parallel)
-            #  contents [Chunk_number, file_path, start_position, end_position]
+        #  contents [Chunk_number, file_path, start_position, end_position]
         for chunk in chunk_details:
             chunk += [hash_list,
                       script_arguments.hash_upper is True,
@@ -369,7 +366,7 @@ def main() -> int:
             if success_lines > input_file_lines:
                 print(f"Note: {success_lines - input_file_lines} more output lines than input file lines:")
                 print("      Your input file may contain UTF-8 characters causing duplicate result lines")
-                print("      such as control characters or characters with right-to-left printing ex: arabic")
+                print("      such as control characters, line endings, or right-to-left printing ex: arabic")
                 print("      Consider processing without multithreading (--parallel / -r)")
                 print("      Alternately clean input file or remove duplicate lines from output file. ex:")
                 print("         [sort --unique] sorted deduplicated output")
