@@ -8,97 +8,116 @@ to a text based separated file (TSV) with fields separated by -s / --separator [
           Some UTF-8 characters may result in duplicate lines if the pile is segmented (-p/--parallel)
           Characters not valid in UTF-8 will cause the line to be skipped
 """
-# todo:   verbose output across all functions
+# todo: verbose output across all functions
+# todo: handle function returns
 
 
 # import libraries
-import argparse
-from argparse import RawDescriptionHelpFormatter
-import fileinput
-import hashlib
-import multiprocessing
-import os
-import sys
-import time
-from typing import Union
+try:
+    import argparse
+    from argparse import RawDescriptionHelpFormatter
+    import fileinput
+    import hashlib
+    import multiprocessing
+    import os
+    import sys
+    import time
+    from typing import Union
+except ImportError as import_error:
+    # pylint: disable=R1722
+    print(f"An error occurred importing libraries:\n {type(import_error).__name__} - {import_error}")
+    quit()
 
 # define functions
-def append_files(from_file: str, to_file: str, block_size:int = 1048576) -> int:
+def append_files(from_file: str, to_file: str, block_size:int = 1048576) -> bool:
     """
     Append one file to another using binary read/write in 1MB blocks
     return 0 on success, -1 on error
     """
     try:
-        with open(from_file, "rb") as file_in, open(to_file, "ab") as file_out:
+        from_file_path = os.path.abspath(from_file)
+        to_file_path = os.path.abspath(to_file)
+        with open(from_file_path, "rb") as file_in, open(to_file_path, "ab") as file_out:
             while True:
                 input_block = file_in.read(block_size)
                 if not input_block:
                     break
                 file_out.write(input_block)
-        return 0
-    except IOError:
-        return -1
+        return True
+    except OSError as error:
+        print(f"ERR: An error occurred appending file [{from_file_path}] to file[{to_file_path}]:\n" /
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        return False
 
-def argument_parser() -> argparse.Namespace:
+def argument_parser() -> Union[argparse.Namespace, bool]:
     """
     Parse shell arguments
     """
     # create argparse instance
-    arg_parser = argparse.ArgumentParser(
-        formatter_class = RawDescriptionHelpFormatter,
-        description =
-            "Translate a file of cleartext strings (passwords) to hashes of the specified format(s)\n" \
-            "to a text based separated file (TSV) with fields separated by -s / --separator [default ':']\n" \
-            "NOTE: The field separator may be in the cleartext string\n" \
-            "NOTE: Non-printable UTF-8 characters are retained in the output\n" \
-            "      Some UTF-8 characters may result in duplicate lines if the pile is segmented (-p/--parallel)\n" \
-            "      Characters not valid in UTF-8 will cause the line to be skipped")
-    # general arguments
-    arg_parser.add_argument('-a', '--hash-algorithms',
-                            default = 'sha1',
-                            help = 'Comma separated Hash list to use (default: sha1) options are: ' \
-                                   'sha1, sha224, sha256, sha384, sha512, ' \
-                                   'sha3_224, sha3_256, sha3_384, sha3_512, ' \
-                                   'blake2b, blake2s, md5')
-    arg_parser.add_argument('-i', '--input-file',
-                            metavar = 'FILE',
-                            nargs = '?',
-                            default = [],
-                            help = "The input file of strings to parse, if omitted STDIN is used")
-    arg_parser.add_argument('-p', '--parallel',
-                            default = 'a',
-                            help = "Number of processes to use or 'a' (default) for automatic detection")
-    arg_parser.add_argument('-t', '--temp-directory',
-                            default="./",
-                            help = "Directory to use for temp files when --parallel is used default PWD)")
-    # output format
-    arg_group_format = arg_parser.add_argument_group('Output Formatting')
-    arg_group_format.add_argument('-s', '--separator',
-                                  default = ':',
-                                  help = "The column separator to use in the output (default ':')")
-    arg_group_format.add_argument('-n', '--no-header',
-                                  action = 'store_true',
-                                  default = False,
-                                  help = "Do not print the header line")
-    arg_group_format.add_argument('-o', '--output-file',
-                                  help = "Output file, if omitted STDOUT is used")
-    arg_group_format.add_argument('-e', '--error-file',
-                                  help = "Optional file to write lines that cannot be parsed")
-    arg_group_format.add_argument('-u', '--hash-upper',
-                                  action='store_true',
-                                  help='Output the hash value in UPPERCASE (default is lowercase)')
-    # Verbosity
-    arg_group_verbosity_parent =  arg_parser.add_argument_group('Output Verbosity')
-    arg_group_verbosity = arg_group_verbosity_parent.add_mutually_exclusive_group()
-    arg_group_verbosity.add_argument('-v', '--verbose',
+    try:
+        arg_parser = argparse.ArgumentParser(
+            formatter_class = RawDescriptionHelpFormatter,
+            description =
+                "Translate a file of cleartext strings (passwords) to hashes of the specified format(s)\n" \
+                "to a text based separated file (TSV) with fields separated by -s / --separator [default ':']\n" \
+                "NOTE: The field separator may be in the cleartext string\n" \
+                "NOTE: Non-printable UTF-8 characters are retained in the output\n" \
+                "      Some UTF-8 characters may result in duplicate lines if the pile is segmented (-p/--parallel)\n" \
+                "      Characters not valid in UTF-8 will cause the line to be skipped")
+        # general arguments
+        arg_parser.add_argument('-a', '--hash-algorithms',
+                                default = 'sha1',
+                                help = 'Comma separated Hash list to use (default: sha1) options are: ' \
+                                    'sha1, sha224, sha256, sha384, sha512, ' \
+                                    'sha3_224, sha3_256, sha3_384, sha3_512, ' \
+                                    'blake2b, blake2s, md5')
+        arg_parser.add_argument('-i', '--input-file',
+                                metavar = 'FILE',
+                                nargs = '?',
+                                default = [],
+                                help = "The input file of strings to parse, if omitted STDIN is used")
+        arg_parser.add_argument('-p', '--parallel',
+                                default = 'a',
+                                help = "Number of processes to use or 'a' (default) for automatic detection")
+        arg_parser.add_argument('-t', '--temp-directory',
+                                default="./",
+                                help = "Directory to use for temp files when --parallel is used default PWD)")
+        # output format
+        arg_group_format = arg_parser.add_argument_group('Output Formatting')
+        arg_group_format.add_argument('-s', '--separator',
+                                    default = ':',
+                                    help = "The column separator to use in the output (default ':')")
+        arg_group_format.add_argument('-n', '--no-header',
+                                    action = 'store_true',
+                                    default = False,
+                                    help = "Do not print the header line")
+        arg_group_format.add_argument('-o', '--output-file',
+                                    help = "Output file, if omitted STDOUT is used")
+        arg_group_format.add_argument('-e', '--error-file',
+                                    help = "Optional file to write lines that cannot be parsed")
+        arg_group_format.add_argument('-u', '--hash-upper',
                                     action='store_true',
-                                    help="Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)")
-    arg_group_verbosity.add_argument('-q', '--quiet',
-                                    action='store_true',
-                                    help="Suppress all console output (STDOUT/STDERR)")
-    return arg_parser.parse_args()
+                                    help='Output the hash value in UPPERCASE (default is lowercase)')
+        # Verbosity
+        arg_group_verbosity_parent =  arg_parser.add_argument_group('Output Verbosity')
+        arg_group_verbosity = arg_group_verbosity_parent.add_mutually_exclusive_group()
+        arg_group_verbosity.add_argument('-v', '--verbose',
+                                        action='store_true',
+                                        help="Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)")
+        arg_group_verbosity.add_argument('-q', '--quiet',
+                                        action='store_true',
+                                        help="Suppress all console output (STDOUT/STDERR)")
+        return arg_parser.parse_args()
+    except OSError as error:
+        print("ERR: An error occurred parsing arguments:\n:" /
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        return False
 
-def count_lines(file_name: str, block_size: int = 1048576) -> int:
+def count_lines(file_name: str, block_size: int = 1048576) -> Union[int, bool]:
     """ Count number of lines in a file reading in [block_size] segments """
     def read_block(file, block_size):
         while True:
@@ -106,54 +125,69 @@ def count_lines(file_name: str, block_size: int = 1048576) -> int:
             if not block:
                 break
             yield block
+    try:
+        file_path = os.path.abspath(file_name)
+        with open(file_path, "r", encoding="UTF-8", errors='ignore') as file:
+            line_count = (sum(block.count("\n") for block in read_block(file, block_size)))
+        return line_count
+    except OSError as error:
+        print(f"ERR: An error occurred counting lines in file [{file_path}]:\n" /
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        sys.exit(-1)
 
-    with open(file_name, "r", encoding="UTF-8", errors='ignore') as file:
-        line_count = (sum(block.count("\n") for block in read_block(file)))
-    return line_count
-
-def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool = False) -> str:
+def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool = False) -> Union[str, dict]:
     """
     Returns a hex hash based on the hash_type and text_string provided
     Shake hashes require an unknown length argument and are not included
     """
-    match hash_type:
-        case "sha1":
-            return_value = hashlib.sha1(text_string.encode()).hexdigest()
-        case "sha224":
-            return_value = hashlib.sha224(text_string.encode()).hexdigest()
-        case "sha256":
-            return_value = hashlib.sha256(text_string.encode()).hexdigest()
-        case "sha384":
-            return_value = hashlib.sha384(text_string.encode()).hexdigest()
-        case "sha512":
-            return_value = hashlib.sha512(text_string.encode()).hexdigest()
-        case "sha3_224":
-            return_value = hashlib.sha3_224(text_string.encode()).hexdigest()
-        case "sha3_256":
-            return_value = hashlib.sha3_256(text_string.encode()).hexdigest()
-        case "sha3_384":
-            return_value = hashlib.sha3_384(text_string.encode()).hexdigest()
-        case "sha3_512":
-            return_value = hashlib.sha3_512(text_string.encode()).hexdigest()
-        case "blake2b":
-            return_value = hashlib.blake2b(text_string.encode()).hexdigest()
-        case "blake2s":
-            return_value = hashlib.blake2s(text_string.encode()).hexdigest()
-        case "md5":
-            return_value = hashlib.md5(text_string.encode()).hexdigest()
-        case _:
-            print(f"hash type: {hash_type}, not supported, exiting.")
-            sys.exit(-1)
-    if hash_uppercase:
-        return return_value.upper()
-    else:
-        return return_value
+    try:
+        match hash_type:
+            case "sha1":
+                return_value = hashlib.sha1(text_string.encode()).hexdigest()
+            case "sha224":
+                return_value = hashlib.sha224(text_string.encode()).hexdigest()
+            case "sha256":
+                return_value = hashlib.sha256(text_string.encode()).hexdigest()
+            case "sha384":
+                return_value = hashlib.sha384(text_string.encode()).hexdigest()
+            case "sha512":
+                return_value = hashlib.sha512(text_string.encode()).hexdigest()
+            case "sha3_224":
+                return_value = hashlib.sha3_224(text_string.encode()).hexdigest()
+            case "sha3_256":
+                return_value = hashlib.sha3_256(text_string.encode()).hexdigest()
+            case "sha3_384":
+                return_value = hashlib.sha3_384(text_string.encode()).hexdigest()
+            case "sha3_512":
+                return_value = hashlib.sha3_512(text_string.encode()).hexdigest()
+            case "blake2b":
+                return_value = hashlib.blake2b(text_string.encode()).hexdigest()
+            case "blake2s":
+                return_value = hashlib.blake2s(text_string.encode()).hexdigest()
+            case "md5":
+                return_value = hashlib.md5(text_string.encode()).hexdigest()
+            case _:
+                print(f"hash type: {hash_type}, not supported, exiting.")
+                sys.exit(-1)
+        if hash_uppercase:
+            return return_value.upper()
+        else:
+            return return_value
+    except OSError as error:
+        error_return = {
+            'name': type(error).__name__,
+            'details': error,
+            'message': f"ERR: An error occurred performing {hash_type} hash on [{text_string}]:"
+        }
+        return error_return
 
-def hash_file_segment(arguments: dict) -> Union[dict, int]:
+def hash_file_segment(args: dict) -> Union[dict, int]:
 
     """
     Open input file and create & populate temporary files with results
-        arguments should be a [dict] with the following keys
+        [dict] args{
             segment_number: int
             file_name: str
             segment_start: int
@@ -164,6 +198,7 @@ def hash_file_segment(arguments: dict) -> Union[dict, int]:
             temp_path: str (optional, default: "./")
             log_errors: bool (optional, default: False)
             verbose: bool  (optional, default: False)
+        }
 
     return [dict] on success, -1 on error
         [dict]{
@@ -179,9 +214,10 @@ def hash_file_segment(arguments: dict) -> Union[dict, int]:
         counter_success = 0
         counter_warning = 0
         # open files
-        temp_path = os.path.abspath(arguments['temp_path'])
+        temp_path = os.path.abspath(args['temp_path'])
         os.makedirs(temp_path, exist_ok=True)
-        with open(arguments['file_name'], mode='r', encoding='UTF-8', errors='strict') as file_input, \
+        input_file_path = os.path.abspath(args['file_name'])
+        with open(input_file_path, mode='r', encoding='UTF-8', errors='strict') as file_input, \
              open(f"{temp_path}/_hashgen_{os.getpid()}.dat", mode='w', encoding='UTF-8') as file_temp, \
              open(f"{temp_path}/_hashgen_{os.getpid()}.err", mode='w', encoding='UTF-8') as file_temp_err:
 
@@ -190,39 +226,53 @@ def hash_file_segment(arguments: dict) -> Union[dict, int]:
             temp_err_file_path = os.path.abspath(file_temp_err.name)
 
             # process chunk lines
-            file_input.seek(arguments['segment_start'])
+            file_input.seek(args['segment_start'])
             for input_line in file_input:
                 try:
                     segment_start += len(input_line)
-                    if segment_start > arguments['segment_end']: # exit at end of chunk
+                    if segment_start > args['segment_end']: # exit at end of chunk
                         break
                     result_line=""
-                    for hash_name in arguments['hash_list']:
-                        if arguments['hash_upper']:
-                            result_line += hash_string(input_line[0:-1], hash_name, True) + arguments['separator']
+                    for hash_name in args['hash_list']:
+                        if args['hash_upper']:
+                            hash_hex = hash_string(input_line[0:-1], hash_name, True)
+                            if isinstance(hash_hex,str):
+                                result_line += hash_hex + args['separator']
+                            elif isinstance(hash_hex, dict): # error
+                                raise ValueError("Hashing Error")
                         else:
-                            result_line += hash_string(input_line[0:-1], hash_name, False) + arguments['separator']
+                            hash_hex = hash_string(input_line[0:-1], hash_name, False)
+                            if isinstance(hash_hex,str):
+                                result_line += hash_hex + args['separator']
+                            elif isinstance(hash_hex, dict): # error
+                                raise ValueError("Hashing Error")
                     result_line += input_line[0:-1]
                     print(result_line, file=file_temp)
                     counter_success += 1
-                except IOError as error:
-                    if arguments['verbose']:
-                        print(f"ERROR: {input_line[0:-1]}", file=sys.stderr)
-                        print("    Details: ", end='', file=sys.stderr)
-                        print(Exception, error, file=sys.stderr)
-                    if arguments['log_errors']:
+                except ValueError:
+                    if args['verbose']:
+                        print(hash_hex['message'], file=sys.stderr)
+                        print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
+                    if args['log_errors']:
                         file_temp_err.write(input_line)
                     counter_warning += 1
+                    break
         results = {
-            'segment_number': arguments['segment_number'],
+            'segment_number': args['segment_number'],
             'temp_file_path': temp_file_path,
-            'temp_err_file_path': temp_file_path,
+            'temp_err_file_path': temp_err_file_path,
             'counter_success': counter_success,
             'counter_warning': counter_warning
         }
         return results
-    except IOError:
-        return -1
+    except OSError as error:
+        print(f"ERR: An error occurred processing segment [{args['segment_number']}]:\n" /
+              f"    Segment temp file: {temp_file_path}",
+              f"    Source file range: {input_file_path} [{args['segment_start']} to {args['segment_end']}]",
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        return False
 
 def segment_file(file_name: str, segments: int = 1) -> list:
     """
@@ -230,62 +280,76 @@ def segment_file(file_name: str, segments: int = 1) -> list:
     segments, aligning each segment to the nearest line break.
         REF: https://nurdabolatov.com/parallel-processing-large-file-in-python
     """
+    try:
+        segment_number = 1
+        file_path = os.path.abspath(file_name)
+        file_size = os.path.getsize(file_name)
+        segment_size = file_size // segments
+        segment_parts = []
 
-    segment_number = 1
-    file_size = os.path.getsize(file_name)
-    segment_size = file_size // segments
-    segment_parts = []
+        with open(file_path, 'r', encoding="UTF-8", errors="surrogateescape") as file:
+            def is_start_of_line(position):
+                """ Check whether the previous character od EOL """
+                if position == 0:
+                    return True
+                file.seek(position - 1)
+                return file.read(1) == '\n'
 
-    with open(file_name, 'r', encoding="UTF-8", errors="surrogateescape") as file:
-        def is_start_of_line(position):
-            """ Check whether the previous character od EOL """
-            if position == 0:
-                return True
-            file.seek(position - 1)
-            return file.read(1) == '\n'
+            def get_next_line_position(position):
+                """ Read the line starting as [position], return  the position after reading the line """
+                file.seek(position)
+                file.readline()
+                return file.tell()
 
-        def get_next_line_position(position):
-            """ Read the line starting as [position], return  the position after reading the line """
-            file.seek(position)
-            file.readline()
-            return file.tell()
+            # Iterate over all chunks and construct arguments for `process_chunk`
+            segment_start = 0
 
-        # Iterate over all chunks and construct arguments for `process_chunk`
-        segment_start = 0
-
-        while segment_start < file_size:
-            if segment_number == segments:
-                # grow the last chunk to be larger honoring # of segments
-                segment_end = file_size
-            else:
-                segment_end = min(file_size, segment_start + segment_size)
-            # Make sure the chunk ends at the beginning of the next line
-            while not is_start_of_line(segment_end):
-                segment_end -= 1
-            # Handle the case when a line is too long to fit the chunk size
-            if segment_start == segment_end:
-                segment_end = get_next_line_position(segment_end)
-            # Save `process_chunk` arguments
-            #args = [segment_number, file_name, segment_start, segment_end]
-            args = {
-                'segment_number': segment_number,
-                'file_name': file_name,
-                'segment_start': segment_start,
-                'segment_end': segment_end
-            }
-            segment_number +=1
-            segment_parts.append(args)
-            # Move to the next chunk
-            segment_start = segment_end
-    return segment_parts
+            while segment_start < file_size:
+                if segment_number == segments:
+                    # grow the last chunk to be larger honoring # of segments
+                    segment_end = file_size
+                else:
+                    segment_end = min(file_size, segment_start + segment_size)
+                # Make sure the chunk ends at the beginning of the next line
+                while not is_start_of_line(segment_end):
+                    segment_end -= 1
+                # Handle the case when a line is too long to fit the chunk size
+                if segment_start == segment_end:
+                    segment_end = get_next_line_position(segment_end)
+                # Save `process_chunk` arguments
+                #args = [segment_number, file_name, segment_start, segment_end]
+                args = {
+                    'segment_number': segment_number,
+                    'file_name': file_name,
+                    'segment_start': segment_start,
+                    'segment_end': segment_end
+                }
+                segment_number +=1
+                segment_parts.append(args)
+                # Move to the next chunk
+                segment_start = segment_end
+        return segment_parts
+    except OSError as error:
+        print(f"ERR: An error occurred defining file segments in file [{file_path}]:\n" /
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        sys.exit(-1)
 
 def track_jobs(job: multiprocessing.Pool, update_interval: int = 1, message_prefix: str = "Tasks remaining: "):
     """ Track the status of running multi-process async pools printing status at [update_interval] """
-    line_len = len(message_prefix) + 10
-    while job._number_left > 0:
-        print(f"\r{message_prefix}{job._number_left * job._chunksize : < {len(message_prefix) + 10}}", end="")
-        time.sleep(update_interval)
-    print(f"\r{message_prefix}{0 : < {len(message_prefix) + 10}}")
+    # pylint: disable=W0212
+    try:
+        while job._number_left > 0:
+            print(f"\r{message_prefix}{job._number_left * job._chunksize : < {len(message_prefix) + 10}}", end="")
+            time.sleep(update_interval)
+        print(f"\r{message_prefix}{0 : < {len(message_prefix) + 10}}")
+    except OSError as error:
+        print("ERR: An error occurred tracking child processes, exiting.  Temp files may persist:\n" /
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        sys.exit(-1)
 
 def main() -> int:
     """ main entry point """
@@ -298,6 +362,8 @@ def main() -> int:
 
     # Parse arguments
     script_arguments = argument_parser()
+    if script_arguments is False:
+        sys.exit(-1)
 
     # Verify hash list includes only supported hashes
     hash_list = str(script_arguments.hash_algorithms).lower().split(",")
@@ -341,26 +407,31 @@ def main() -> int:
         if parallel_jobs > 1:
             if not fileinput.input(files=script_arguments.input_file).isstdin():
                 # parallel processing
-                core_multi_process()
+                # todo: handle arguments for core_multi_process
+                #core_multi_process()
+                pass
             else:
                 # fall back to single threaded if using <STDIN>
                 print("WARN: parallel processing (-p/--parallel) does not support <STDIN>\n:" \
                       " -- reverting to single-process mode.",
                     file=sys.stderr
                 )
-                core_single_process()
+                # todo: handle arguments for core_single_process
+                # core_single_process()
         elif parallel_jobs == 1:
             #single threaded
-            core_single_process()
+            # todo: handle arguments for core_single_process
+            # core_single_process()
+            pass
         else:
             # unable to determine threading
-            print(f"ERR: Unable to determine a threading strategy, exiting.",
+            print("ERR: Unable to determine a threading strategy, exiting.",
                   file=sys.stderr
             )
             sys.exit(-1)
     else:
         # unable to determine threading
-        print(f"ERR: Unable to determine a threading strategy, exiting.",
+        print("ERR: Unable to determine a threading strategy, exiting.",
                 file=sys.stderr
         )
         sys.exit(-1)
@@ -392,13 +463,13 @@ def core_multi_process(args: dict) -> int:
         if not isinstance(input_file_lines,int) or input_file_lines < 1:
             print(f"ERR: Unable to count lines in file: {input_file_path}, exiting.", file=sys.stderr)
             sys.exit(-1)
-    except IOError:
+    except OSError:
         print(f"ERR: Unable to count lines in file: {input_file_path}, exiting.", file=sys.stderr)
         sys.exit(-1)
 
-    # determine file segment details
+    # determine file segment details: errors handled by segment_file()
     if input_file_lines >= args['parallel']:
-        segment_details = segment_file(file_name=args['input_file'], segments=(args['parallel']))
+        segment_details = segment_file(file_name=args['input_file'], segments=args['parallel'])
     else:
         #less lines in file than cores assigned
         segment_details = segment_file(file_name=args['input_file'], segments=input_file_lines)
@@ -412,11 +483,18 @@ def core_multi_process(args: dict) -> int:
         segment['log_errors'] = args['log_errors']
         segment['verbose'] = args['verbose']
 
-    # start  and monitor child processes
-    with multiprocessing.Pool(processes=args['parallel']) as process_pool:
-        process_pool_results = process_pool.starmap_async(hash_file_segment, segment_details, chunksize = 1)
-        track_jobs(process_pool_results, message_prefix = "Creating hashes - Jobs remaining: ")
-        segment_results = process_pool_results.get()
+    # start and monitor child processes: errors handled by track_jobs()
+    try:
+        with multiprocessing.Pool(processes=args['parallel']) as process_pool:
+            process_pool_results = process_pool.starmap_async(hash_file_segment, segment_details, chunksize = 1)
+            track_jobs(process_pool_results, message_prefix = "Creating hashes - Jobs remaining: ")
+            segment_results = process_pool_results.get()
+    except OSError as error:
+        print("ERR: An error occurred starting child jobs, exiting.  Temp files may persist.:\n" /
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        sys.exit(-1)
 
     # create output file(s)
     try:
@@ -456,9 +534,13 @@ def core_multi_process(args: dict) -> int:
             if len(os.listdir(temp_path)) == 0: # empty temp directory
                 os.rmdir(temp_path)
 
-    except IOError:
-        #Do Something Here
-        pass
+    except OSError as error:
+        print("ERR: An error occurred merging temp files, exiting.  Temp files may persist.:\n" /
+              f"{type(error).__name__} - {error}",
+              file=sys.stderr
+        )
+        sys.exit(-1)
+
 
     # show results
     success_lines = 0
@@ -489,8 +571,21 @@ def core_multi_process(args: dict) -> int:
     return 0
 
 def core_single_process(args: dict) -> int:
-    """ Process via main process """
+    """
+    Process via main process
+    [dict] args{
+        'input_file': str,
+        'output_file': str or None,
+        'error_file': str or None,
+
+
+    }
+
+    """
+
+    # todo: refactor single-threaded code
     pass
+
 
 # begin processing
 if __name__ == '__main__':
