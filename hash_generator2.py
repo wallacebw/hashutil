@@ -418,10 +418,6 @@ def core_multi_process(args: dict) -> int:
         track_jobs(process_pool_results, message_prefix = "Creating hashes - Jobs remaining: ")
         segment_results = process_pool_results.get()
 
-#-------------------------
-#-------------------------
-#-------------------------
-#-------------------------
     # create output file(s)
     try:
         # create output directory if needed
@@ -490,9 +486,9 @@ def core_multi_process(args: dict) -> int:
             print("      Alternately clean input file or remove duplicate lines from output file. ex:")
             print("         [sort --unique] sorted deduplicated output")
             print("         [rli or rling] unsorted deduplicated output")
+    return 0
 
-
-def core_single_process():
+def core_single_process(args: dict) -> int:
     """ Process via main process """
     pass
 
