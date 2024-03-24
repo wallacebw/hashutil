@@ -10,7 +10,7 @@ to a text based separated file (TSV) with fields separated by -s / --separator [
 """
 # todo: verbose output across all functions
 # todo: handle function returns
-
+# todo dict to named tuple for function args and return
 
 # import libraries
 try:
@@ -137,7 +137,7 @@ def count_lines(file_name: str, block_size: int = 1048576) -> Union[int, bool]:
         )
         sys.exit(-1)
 
-def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool = False) -> Union[str, dict]:
+def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool = False) -> Union[str, tuple]:
     """
     Returns a hex hash based on the hash_type and text_string provided
     Shake hashes require an unknown length argument and are not included
@@ -584,7 +584,7 @@ def core_single_process(args: dict) -> int:
     """
 
     # todo: refactor single-threaded code
-    pass
+    print('nothing to see here...')
 
 
 # begin processing
