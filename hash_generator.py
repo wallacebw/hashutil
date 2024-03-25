@@ -1,271 +1,769 @@
 #!/usr/bin/env python
 
+# todo: verbose output across all functions
+# todo: handle function returns
+
 """
-Translate a file of cleartext strings (passwords) to hashes.
-    NOTE: The field separator may be in the cleartext password
-    NOTE: Non-printable characters are retained in the output
-    NOTE: Strings not valid in UTF-8 are skipped
+Translate a file of cleartext strings (passwords) to hashes of the specified format(s)
+to a text based separated file (TSV) with fields separated by -s / --separator [default ':']
+    NOTE: The field separator may be in the cleartext string
+    NOTE: Non-printable UTF-8 characters are retained in the output
+          Some UTF-8 characters may result in duplicate lines if the pile is segmented (-p/--parallel)
+          Characters not valid in UTF-8 will cause the line to be skipped
 """
 
-######################
-#  IMPORT LIBRARIES  #
-######################
-import argparse
-from argparse import RawDescriptionHelpFormatter
-import fileinput
-import hashlib
-import os
-import sys
+# import libraries
+try:
+    import argparse
+    from argparse import RawDescriptionHelpFormatter
+    from collections import namedtuple
+    import fileinput
+    import hashlib
+    import multiprocessing
+    import os
+    import sys
+    import time
+    from typing import Union
+except ImportError as import_error:
+    # pylint: disable=R1722
+    print(f"An error occurred importing libraries:\n {type(import_error).__name__} - {import_error}")
+    quit()
 
+# define named tuples
+HashError = namedtuple('HashError',[
+    'error_name', # type(error).__name__,
+    'error_details', # error,
+    'message' # str
+])
+HashGeneratorSettings = namedtuple('Settings',[
+    'hash_algorithms', # list
+    'hash_upper', # bool
+    'input_file', # str
+    'parallel', # int or 'a'
+    'temp_directory', # str
+    'separator', # str
+    'no_header', # bool
+    'output_file', # str
+    'error_file', # str
+    'verbose', # bool
+    'quiet' # bool
+])
+FileSegment = namedtuple('FileSegment',[
+    'segment_number', # int,
+    'file_name', # str
+    'segment_start', # int
+    'segment_end', # int
+])
+SegmentResults = namedtuple('SegmentResults',[
+    'segment_number', # int,
+    'temp_file_path', # str,
+    'temp_err_file_path', # str or None,
+    'counter_success', # int,
+    'counter_warning', # int
+])
 
-######################
-## DEFINE FUNCTIONS ##
-######################
-def argument_parser() -> argparse.Namespace:
-    """
-    Parse shell arguments
-    Help return is:
-    -----------------
-    usage: hash_generator.py [-h] [-s SEPARATOR] [-n] [-i [FILE]] [-o OUTPUT_FILE] [-e ERROR_FILE] [-a HASH_ALGORITHMS]
-           [-l | -u] [-v | -q]
+# define constants
+SUPPORTED_HASHES = [
+"sha1", "sha224", "sha256", "sha284", "sha512", #SHA
+"sha3_224", "sha3_384", "sha3_512", # SHA3
+"blake2b", "blake2s", "md5" # Misc
+]
 
-    Translate a file of cleartext strings (passwords) to hashes
-        NOTE: The field separator may be in the cleartext
-        NOTE: Non-printable characters are retained in the output
-        NOTE: strings not valid in UTF-8 are skipped (see -e,-v,-q switches)
+# define functions
+def append_files(from_file: str, to_file: str, block_size:int = 1048576) -> bool:
+    """ Append one file to another using binary read/write in 1MB blocks return 0 on success, -1 on error  """
+    try:
+        from_file_path = os.path.abspath(from_file)
+        to_file_path = os.path.abspath(to_file)
+        with open(from_file_path, "rb") as file_in, open(to_file_path, "ab") as file_out:
+            while True:
+                input_block = file_in.read(block_size)
+                if not input_block:
+                    break
+                file_out.write(input_block)
+        return True
+    except OSError as error:
+        print(f"ERR: An error occurred appending file [{from_file_path}] to file[{to_file_path}]:\n" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        return False
 
-    options:
-    -h, --help            show this help message and exit
-    -s SEPARATOR, --separator SEPARATOR
-                            The column separator to use in the output file if specified (default ':')
-    -n, --no-header       Do not print the header line
+def count_lines(file_name: str, block_size: int = 1048576) -> Union[int, bool]:
+    """ Count number of lines in a file reading in [block_size] segments """
+    def read_block(file, block_size):
+        while True:
+            block = file.read(block_size)
+            if not block:
+                break
+            yield block
+    try:
+        file_path = os.path.abspath(file_name)
+        with open(file_path, "r", encoding="UTF-8", errors='ignore') as file:
+            line_count = (sum(block.count("\n") for block in read_block(file, block_size)))
+        return line_count
+    except OSError as error:
+        print(f"ERR: An error occurred counting lines in file [{file_path}]:\n" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        sys.exit(-1)
 
-    File Management:
-    -i [FILE], --input-file [FILE]
-                            The input file of strings to parse, if omitted STDIN is used
-    -o OUTPUT_FILE, --output-file OUTPUT_FILE
-                            Output file, if omitted STDOUT is used
-    -e ERROR_FILE, --error-file ERROR_FILE
-                            Optional file to write lines that cannot be parsed
+def parse_arguments() -> Union[argparse.Namespace, bool]:
+    """ Parse shell arguments """
+    # create argparse instance
+    try:
+        arg_parser = argparse.ArgumentParser(
+            formatter_class = RawDescriptionHelpFormatter,
+            description =
+                "Translate a file of cleartext strings (passwords) to hashes of the specified format(s)\n" \
+                "to a text based separated file (TSV) with fields separated by -s / --separator [default ':']\n" \
+                "NOTE: The field separator may be in the cleartext string\n" \
+                "NOTE: Non-printable UTF-8 characters are retained in the output\n" \
+                "      Some UTF-8 characters result in duplicate lines if the pile is segmented (-p/--parallel)\n" \
+                "      Characters not valid in UTF-8 will cause the line to be skipped")
+        # general arguments
+        arg_parser.add_argument(
+            '-a', '--hash-algorithms',
+            default = 'sha1',
+            help = 'Comma separated Hash list to use (default: sha1) options are: ' \
+                    'sha1, sha224, sha256, sha384, sha512, ' \
+                    'sha3_224, sha3_256, sha3_384, sha3_512, ' \
+                    'blake2b, blake2s, md5'
+        )
+        arg_parser.add_argument(
+            '-i', '--input-file',
+            metavar = 'FILE',
+            nargs = '?',
+            default = [],
+            help = "The input file(s) of strings to parse, if omitted STDIN is used (comma separated)"
+        )
+        arg_parser.add_argument(
+            '-p', '--parallel',
+            default = 'a',
+            help = "Number of processes to use or 'a' (default) for automatic detection"
+        )
+        arg_parser.add_argument(
+            '-t', '--temp-directory',
+            default="./",
+            help = "Directory to use for temp files when --parallel is used default PWD)"
+        )
+        # output format
+        arg_group_format = arg_parser.add_argument_group('Output Formatting')
+        arg_group_format.add_argument(
+            '-s', '--separator',
+            default = ':',
+            help = "The column separator to use in the output (default ':')"
+        )
+        arg_group_format.add_argument(
+            '-n', '--no-header',
+            action = 'store_true',
+            default = False,
+            help = "Do not print the header line"
+        )
+        arg_group_format.add_argument(
+            '-o', '--output-file',
+            help = "Output file, if omitted STDOUT is used"
+        )
+        arg_group_format.add_argument(
+            '-e', '--error-file',
+            help = "Optional file to write lines that cannot be parsed"
+        )
+        arg_group_format.add_argument(
+            '-u', '--hash-upper',
+            action='store_true',
+            help='Output the hash value in UPPERCASE (default is lowercase)'
+        )
+        # Verbosity
+        arg_group_verbosity_parent = arg_parser.add_argument_group('Output Verbosity')
+        arg_group_verbosity = arg_group_verbosity_parent.add_mutually_exclusive_group()
+        arg_group_verbosity.add_argument(
+            '-v', '--verbose',
+            action='store_true',
+            help="Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)"
+        )
+        arg_group_verbosity.add_argument(
+            '-q', '--quiet',
+            action='store_true',
+            help="Suppress all console output (STDOUT/STDERR)"
+        )
+        return arg_parser.parse_args()
+    except OSError as error:
+        print("ERR: An error occurred parsing arguments:\n:" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        return False
 
-    Hash:
-    -a HASH_ALGORITHMS, --hash-algorithms HASH_ALGORITHMS
-                            Comma separated Hash list to use (default: sha1) options are:
-                            sha1, sha224, sha256, sha384, sha512,
-                            sha3_224, sha3_256, sha3_384, sha3_512,
-                            blake2b, blake2s, md5
-    -l, --hash-lower      Output the hash value in lowercase (default)
-    -u, --hash-upper      Output the hash value in UPPERCASE
-
-    Output Verbosity:
-    -v, --verbose         Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)
-    -q, --quiet           Suppress all console output (STDOUT/STDERR)
-    -----------------
-    """
-    # Create argparse instance
-    arg_parser = argparse.ArgumentParser(
-        formatter_class = RawDescriptionHelpFormatter,
-        description = "Translate a file of cleartext strings (passwords) to hashes\n"\
-                      "    NOTE: The field separator may be in the cleartext\n"\
-                      "    NOTE: Non-printable characters are retained in the output\n"\
-                      "    NOTE: strings not valid in UTF-8 are skipped (see -e,-v,-q switches)")
-    # General Arguments
-    arg_parser.add_argument('-s', '--separator',
-                                default = ':',
-                                help = "The column separator to use in the output (default ':')")
-    arg_parser.add_argument('-n', '--no-header',
-                                action = 'store_true',
-                                default = False,
-                                help = "Do not print the header line")
-    # File Arguments
-    argument_group_files = arg_parser.add_argument_group('File Management')
-    argument_group_files.add_argument('-i', '--input-file',
-                                    metavar = 'FILE',
-                                    nargs = '?',
-                                    default = [],
-                                    help = "The input file of strings to parse, if omitted STDIN is used")
-    argument_group_files.add_argument('-o', '--output-file',
-                                    help = "Output file, if omitted STDOUT is used")
-    argument_group_files.add_argument('-e', '--error-file',
-                                    help = "Optional file to write lines that cannot be parsed")
-    # Hash formatting
-    argument_group_hash_wrapper = arg_parser.add_argument_group('Hash')
-    argument_group_hash_wrapper.add_argument('-a', '--hash-algorithms',
-                                    default = 'sha1',
-                                    help = 'Comma separated Hash list to use (default: sha1) options are: '\
-                                           'sha1, sha224, sha256, sha384, sha512, '\
-                                           'sha3_224, sha3_256, sha3_384, sha3_512, '\
-                                           'blake2b, blake2s, md5')
-    argument_group_hash = argument_group_hash_wrapper.add_mutually_exclusive_group()
-    argument_group_hash.add_argument('-l', '--hash-lower',
-                                    action='store_true',
-                                    help='Output the hash value in lowercase (default)')
-    argument_group_hash.add_argument('-u', '--hash-upper',
-                                    action='store_true',
-                                    help='Output the hash value in UPPERCASE')
-    # Console output
-    argument_group_verbosity_parent =  arg_parser.add_argument_group('Output Verbosity')
-    argument_group_verbosity = argument_group_verbosity_parent.add_mutually_exclusive_group()
-    argument_group_verbosity.add_argument('-v', '--verbose',
-                                        action='store_true',
-                                        help="Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)")
-    argument_group_verbosity.add_argument('-q', '--quiet',
-                                        action='store_true',
-                                        help="Suppress all console output (STDOUT/STDERR)")
-    return arg_parser.parse_args()
-
-def hash_string(text_string: str, hash_type: str = "sha1", hash_uppercase: bool = False) -> str:
-    """
-    Returns a hex hash based on the hash_type and text_string provided
-    """
-    match hash_type:
-        case "sha1":
-            return_value = hashlib.sha1(text_string.encode()).hexdigest()
-        case "sha224":
-            return_value = hashlib.sha224(text_string.encode()).hexdigest()
-        case "sha256":
-            return_value = hashlib.sha256(text_string.encode()).hexdigest()
-        case "sha384":
-            return_value = hashlib.sha384(text_string.encode()).hexdigest()
-        case "sha512":
-            return_value = hashlib.sha512(text_string.encode()).hexdigest()
-        case "sha3_224":
-            return_value = hashlib.sha3_224(text_string.encode()).hexdigest()
-        case "sha3_256":
-            return_value = hashlib.sha3_256(text_string.encode()).hexdigest()
-        case "sha3_384":
-            return_value = hashlib.sha3_384(text_string.encode()).hexdigest()
-        case "sha3_512":
-            return_value = hashlib.sha3_512(text_string.encode()).hexdigest()
-        # Shake requires an unknown length argument
-        #case "shake_128":
-        #    return_value = hashlib.shake_128(text_string.encode()).hexdigest()
-        #case "shake_256":
-        #    return_value = hashlib.shake_256(text_string.encode()).hexdigest()
-        case "blake2b":
-            return_value = hashlib.blake2b(text_string.encode()).hexdigest()
-        case "blake2s":
-            return_value = hashlib.blake2s(text_string.encode()).hexdigest()
-        case "md5":
-            return_value = hashlib.md5(text_string.encode()).hexdigest()
-        case _:
-            print(f"hash type: {hash_type}, not supported, exiting.")
-            exit(-1)
-    if hash_uppercase:
-        return return_value.upper()
-    else:
-        return return_value
-
-def main() -> int:
-    """
-    Main entry point.
-    """
-    # Initialize variables
-    counter_warnings = 0
-    counter_errors   = 0
-    counter_success  = 0
-    supported_hashes = [
-        "sha1", "sha224", "sha256", "sha284", "sha512", #SHA
-        "sha3_224", "sha3_384", "sha3_512", # SHA3
-        "blake2b", "blake2s", "md5" # Misc
-    ]
-
-    # Parse arguments
-    script_arguments = argument_parser()
-
+def parse_settings(arguments: argparse.Namespace = None) -> HashGeneratorSettings:
+    """ populate class settings from arguments provided by parse_arguments """
+    # store final settings in results
+    results = {}
+    # parse arguments if not present
+    if arguments is None:
+        arguments = parse_arguments()
+    # verify successful type
+    if arguments is False:
+        print("Unable to parse arguments, exiting. ", \
+            file=sys.stderr
+        )
+        sys.exit(-1)
     # Verify hash list includes only supported hashes
-    hash_list = str(script_arguments.hash_algorithms).lower().split(",")
+    hash_list = str(arguments.hash_algorithms).lower().split(",")
     hash_list[:] = [entry.strip() for entry in hash_list] # strip spaces from entries
     for hash_name in hash_list:
-        if hash_name not in supported_hashes:
-            print(f"hash type: {hash_name}, not supported, exiting.")
-            exit(-1)
-    if script_arguments.verbose:
-        if script_arguments.output_file:
-            print(f"The following hashes were selected: {hash_list}")
+        if hash_name not in SUPPORTED_HASHES:
+            print(f"ERR: hash type: {hash_name}, not supported, exiting.",
+                file=sys.stderr
+            )
+            sys.exit(-1)
+    results['hash_algorithms'] = hash_list
+    # process threading argument
+    if arguments.parallel:
+        # automatic processor detection
+        if not str(arguments.parallel).isnumeric() and str(arguments.parallel).lower() == 'a':
+            parallel_jobs = os.cpu_count()
+            if parallel_jobs is None or parallel_jobs > len(os.sched_getaffinity(0)):
+                parallel_jobs = 1
+        # manual process count specified
+        if str(arguments.parallel).isnumeric():
+            parallel_jobs = int(arguments.parallel)
+        if str(arguments.parallel).isnumeric() \
+        and int(arguments.parallel) < 1:
+            print(f"WARN: Invalid -p/--parallel argument ({arguments.parallel}), disabling multi-processing",
+                file=sys.stderr
+            )
+            arguments.parallel = 1
+    else:
+        parallel_jobs = os.cpu_count()
+        if parallel_jobs is None:
+            print("WARN: Unable to determine cpu thread count, disabling multi-processing",
+                file=sys.stderr
+            )
+            parallel_jobs = 1
+    results['parallel'] = parallel_jobs
+    # convert file/dir references to absolute paths
+    path_args = {
+        'input_file': arguments.input_file,
+        'output_file': arguments.output_file,
+        'error_file': arguments.error_file,
+        'temp_directory': arguments.temp_directory
+    }
+    for key, value in path_args.items():
+        if isinstance(value,list) and key == 'input_file': # no input specified
+            results[key] = []
+        elif value is not None and value != "":
+            results[key] = os.path.abspath(value)
         else:
-            print(f"The following hashes were selected: {hash_list}", file=sys.stderr)
-
-    # Open files if specified
-    if script_arguments.output_file:
-        try:
-            file_output = open(file=script_arguments.output_file, mode='w', encoding="utf-8")
-        except IOError as err:
-            print(f"ERROR: unable to open file '{script_arguments.output_file}' for writing", file=sys.stderr)
-            print("    Details: ", end='', file=sys.stderr)
-            print(Exception, err, file=sys.stderr)
-            sys.exit(0)
-    if script_arguments.error_file:
-        try:
-            file_error = open(file=script_arguments.error_file, mode='w', encoding="utf-8")
-        except IOError as err:
-            print(f"ERROR: unable to open file '{script_arguments.error_file}' for writing errors", file=sys.stderr)
-            print("    Details: ", end='', file=sys.stderr)
-            print(Exception, err, file=sys.stderr)
-            sys.exit(0)
-
-    # Print header line
-    if script_arguments.no_header is not True:
-        if script_arguments.output_file:
-            print(*hash_list, "clear", sep=script_arguments.separator, file=file_output)
+            results[key] = None
+    # parse bool values
+    bool_args = {
+        'hash_upper': arguments.hash_upper,
+        'no_header': arguments.no_header,
+        'verbose': arguments.verbose,
+        'quiet': arguments.quiet
+    }
+    for key, value in bool_args.items():
+        if value is True:
+            results[key] = True
         else:
-            print(*hash_list, "clear", sep=script_arguments.separator)
+            results[key] = False
+    if len(arguments.separator):
+        results['separator'] = arguments.separator
+    else:
+        print(f"ERR: separator value [{arguments.separator}], not supported, exiting.",
+            file=sys.stderr
+        )
+        sys.exit(-1)
+    # populate settings tuple
+    settings = HashGeneratorSettings(
+        hash_algorithms = results['hash_algorithms'],
+        parallel = results['parallel'],
+        separator = results['separator'],
+        input_file = results['input_file'],
+        output_file = results['output_file'],
+        error_file = results['error_file'],
+        temp_directory = results['temp_directory'],
+        hash_upper = results['hash_upper'],
+        no_header = results['no_header'],
+        verbose = results['verbose'],
+        quiet = results['quiet']
+    )
+    return settings
 
-    # Process input file or STDIN
-    for input_line in fileinput.input(files=script_arguments.input_file):
-        try:
-            result_line=""
-            for hash_name in hash_list:
-                if script_arguments.hash_upper:
-                    result_line += hash_string(input_line[0:-1], hash_name, True) + script_arguments.separator
+def hash_string(text_string: str, settings: HashGeneratorSettings, hash_type: str = "sha1") -> Union[str, HashError]:
+    """  Returns a hex hash based on the hash_type and text_string provided """
+    try:
+        match hash_type:
+            case "sha1":
+                return_value = hashlib.sha1(text_string.encode()).hexdigest()
+            case "sha224":
+                return_value = hashlib.sha224(text_string.encode()).hexdigest()
+            case "sha256":
+                return_value = hashlib.sha256(text_string.encode()).hexdigest()
+            case "sha384":
+                return_value = hashlib.sha384(text_string.encode()).hexdigest()
+            case "sha512":
+                return_value = hashlib.sha512(text_string.encode()).hexdigest()
+            case "sha3_224":
+                return_value = hashlib.sha3_224(text_string.encode()).hexdigest()
+            case "sha3_256":
+                return_value = hashlib.sha3_256(text_string.encode()).hexdigest()
+            case "sha3_384":
+                return_value = hashlib.sha3_384(text_string.encode()).hexdigest()
+            case "sha3_512":
+                return_value = hashlib.sha3_512(text_string.encode()).hexdigest()
+            case "blake2b":
+                return_value = hashlib.blake2b(text_string.encode()).hexdigest()
+            case "blake2s":
+                return_value = hashlib.blake2s(text_string.encode()).hexdigest()
+            case "md5":
+                return_value = hashlib.md5(text_string.encode()).hexdigest()
+            case _:
+                print(f"hash type: {hash_type}, not supported, exiting.")
+                sys.exit(-1)
+
+        if settings.hash_upper:
+            return return_value.upper()
+        else:
+            return return_value
+    except OSError as error:
+        error_return = HashError(
+            error_name = type(error).__name__,
+            error_details = error,
+            message = f"ERR: An error occurred performing {hash_type} hash on [{text_string}]:"
+        )
+        return error_return
+
+def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResults, int]:
+    """ Open input file and create & populate temporary files with results """
+    try:
+        # define variables
+        settings = HashGeneratorSettings(**settings) # convert back to named tuple (multiprocessing limitation)
+        counter_success = 0
+        counter_warning = 0
+        temp_directory = settings.temp_directory
+        # open files
+        os.makedirs(temp_directory, exist_ok=True)
+        input_file_path = os.path.abspath(segment.file_name)
+        with open(input_file_path, mode='r', encoding='UTF-8', errors='strict') as file_input, \
+                open(f"{temp_directory}/_hashgen_{os.getpid()}.dat", mode='w', encoding='UTF-8') as file_temp:
+                # open(f"{temp_directory}/_hashgen_{os.getpid()}.err", mode='w', encoding='UTF-8') as file_temp_err:
+            # record temp files absolute paths
+            temp_file_path = os.path.abspath(file_temp.name)
+            temp_err_file_path = f"{temp_directory}/_hashgen_{os.getpid()}.err"
+            # process chunk lines
+            segment_start = segment.segment_start
+            file_input.seek(segment_start)
+            for input_line in file_input:
+                try:
+                    segment_start += len(input_line)
+                    if segment_start > segment.segment_end: # exit at end of chunk
+                        break
+                    result_line=""
+                    for hash_name in settings.hash_algorithms:
+                        hash_hex = hash_string(input_line[0:-1], settings, hash_name)
+                        if isinstance(hash_hex,str):
+                            result_line += hash_hex + settings.separator
+                        elif isinstance(hash_hex, dict): # error
+                            raise ValueError("Hashing Error")
+                    result_line += input_line[0:-1]
+                    print(result_line, file=file_temp)
+                    counter_success += 1
+                except ValueError:
+                    if settings.verbose:
+                        print(hash_hex['message'], file=sys.stderr)
+                        print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
+                    if settings.error_file:
+                        log_errored_line(error_file=temp_err_file_path, line=input_line)
+                    counter_warning += 1
+                    break
+        results = SegmentResults(
+            segment_number = segment.segment_number,
+            temp_file_path = temp_file_path,
+            temp_err_file_path = temp_err_file_path,
+            counter_success = counter_success,
+            counter_warning = counter_warning
+        )
+        return results
+    except OSError as error:
+        print(f"ERR: An error occurred processing segment [{segment.segment_number}]:\n" \
+            f"    Segment temp file: {temp_file_path}",
+            f"    Source file range: {input_file_path} [{segment.segment_start} to {segment.segment_end}]",
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        return False
+
+def log_errored_line(error_file: str, line: str) -> bool:
+    """ log the line producing an error to a file """
+    try:
+        error_file_path = os.path.abspath(error_file)
+        with open(file=error_file_path, mode='a', encoding="utf-8", errors='strict') as file_error:
+            if line[-1] == '\n':
+                file_error.write(line)
+            else:
+                print(line, file=file_error)
+        return True
+    except OSError as error:
+        print(f"ERR: An error occurred logging an unprocessed line to error file [{error_file_path}]:\n" \
+            f"    line: {line}\n" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        return False
+
+def segment_file(file_name: str, segments: int = 1) -> list:
+    """
+    Scan a file to identifying the start and end position of the defined number of
+    segments, aligning each segment to the nearest line break.
+        REF: https://nurdabolatov.com/parallel-processing-large-file-in-python
+    """
+    try:
+        segment_number = 1
+        file_path = os.path.abspath(file_name)
+        file_size = os.path.getsize(file_name)
+        segment_size = file_size // segments
+        segment_parts = []
+        with open(file_path, 'r', encoding="UTF-8", errors="surrogateescape") as file:
+            def is_start_of_line(position):
+                """ Check whether the previous character od EOL """
+                if position == 0:
+                    return True
+                file.seek(position - 1)
+                return file.read(1) == '\n'
+            def get_next_line_position(position):
+                """ Read the line starting as [position], return  the position after reading the line """
+                file.seek(position)
+                file.readline()
+                return file.tell()
+            # Iterate over all chunks and construct arguments for `process_chunk`
+            segment_start = 0
+            while segment_start < file_size:
+                if segment_number == segments:
+                    # grow the last chunk to be larger honoring # of segments
+                    segment_end = file_size
                 else:
-                    result_line += hash_string(input_line[0:-1], hash_name, False) + script_arguments.separator
-            result_line += input_line[0:-1]
+                    segment_end = min(file_size, segment_start + segment_size)
+                # Make sure the chunk ends at the beginning of the next line
+                while not is_start_of_line(segment_end):
+                    segment_end -= 1
+                # Handle the case when a line is too long to fit the chunk size
+                if segment_start == segment_end:
+                    segment_end = get_next_line_position(segment_end)
+                # Save `process_chunk` arguments
+                segment = FileSegment(
+                    segment_number = segment_number,
+                    file_name = file_name,
+                    segment_start = segment_start,
+                    segment_end = segment_end
+                )
+                segment_number +=1
+                segment_parts.append(segment)
+                # Move to the next chunk
+                segment_start = segment_end
+        return segment_parts
+    except OSError as error:
+        print(f"ERR: An error occurred defining file segments in file [{file_path}]:\n" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        sys.exit(-1)
 
-            if script_arguments.output_file:
-                print(result_line, file=file_output)
-            else:
-                print(result_line)
-            counter_success += 1
-        except IOError as err:
-            if script_arguments.verbose:
-                print(f"ERROR: line #{str(fileinput.lineno())} skipped: {input_line[0:-1]}", file=sys.stderr)
-                print("    Details: ", end='', file=sys.stderr)
-                print(Exception, err, file=sys.stderr)
-            if script_arguments.error_file:
-                file_error.write(input_line)
-            counter_errors += 1
+def track_jobs(job_pool: multiprocessing.Pool, update_interval: int = 1, message_prefix: str = "Tasks remaining: "):
+    """ Track the status of running multi-process async pools printing status at [update_interval] """
+    # pylint: disable=W0212
+    try:
+        while job_pool._number_left > 0:
+            print(f"\r{message_prefix}{job_pool._number_left : < {len(message_prefix) + 10}}", end="")
+            time.sleep(update_interval)
+        print(f"\r{message_prefix}{0 : < {len(message_prefix) + 10}}")
+    except OSError as error:
+        print("ERR: An error occurred tracking child processes, exiting.  Temp files may persist:\n" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        sys.exit(-1)
 
-    if script_arguments.quiet is not True:
-        if script_arguments.output_file:
-            if counter_success:
-                print(f"{str(fileinput.lineno()).rjust(12)} lines processed from: {fileinput.filename()}")
-                print(f"{str(counter_success).rjust(12)} lines written to: {file_output.name}.")
-            if script_arguments.error_file:
-                if (counter_warnings + counter_errors) > 0:
-                    print(f"{str(counter_warnings + counter_errors).rjust(12)} errored lines written to: "\
-                        f"{file_error.name}.")
-            else:
-                if counter_errors > 0:
-                    print(f"Errors identified: {str(counter_errors)}", file=sys.stderr)
-                if counter_warnings > 0:
-                    print(f"Warnings detected: {counter_warnings} (use -v / --verbose for details)", file=sys.stderr)
+def process_multi(settings: HashGeneratorSettings) -> int:
+    """ Process via multi_processing """
+    # count lines in source file
+    try:
+        input_file_base_name = os.path.basename(settings.input_file)
+        print(f"Counting lines in '{input_file_base_name}': ", end='', flush=True)
+        input_file_lines = count_lines(os.path.abspath(settings.input_file))
+        print(input_file_lines)
+        if not isinstance(input_file_lines,int) or input_file_lines < 1:
+            print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}, exiting.",
+                    file=sys.stderr
+            )
+            sys.exit(-1)
+    except OSError:
+        print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}, exiting.",
+                file=sys.stderr
+        )
+        sys.exit(-1)
+    # determine file segment details: errors handled by segment_file()
+    if input_file_lines >= settings.parallel:
+        segment_list = segment_file(file_name=settings.input_file, segments=settings.parallel)
+    else:
+        #less lines in file than cores assigned
+        segment_list = segment_file(file_name=settings.input_file, segments=input_file_lines)
+    # merge segment list with settings into a 2 item list matching hash_file_segment() arguments
+    hash_file_segment_args = []
+    for segment in segment_list:
+        # convert settings to dict: namedtuple not supported by multiprocessing.Pool (pickle limitation)
+        # https://docs.python.org/3/library/pickle.html#what-can-be-pickled-and-unpickled
+        hash_file_segment_args.append([segment, settings._asdict()])
+        # print(settings._asdict())
+        #sys.exit()
+    # start and monitor child processes: errors handled by track_jobs()
+    try:
+        with multiprocessing.Pool(settings.parallel) as process_pool:
+            pool_results = process_pool.starmap_async(
+                func=hash_file_segment,
+                iterable=hash_file_segment_args,
+                chunksize = 1
+            )
+            track_jobs(pool_results, message_prefix="Creating hashes - Jobs remaining: ")
+            segment_results = pool_results.get()
+    except OSError as error:
+        print("ERR: An error occurred starting child jobs, exiting.  Temp files may persist.:\n" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        sys.exit(-1)
+   # create output file(s)
+    try:
+        # create output directory if needed
+        output_file_path = os.path.abspath(settings.output_file)
+        os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
+        if settings.error_file:
+            output_error_file_path = os.path.abspath(settings.error_file)
+            os.makedirs(os.path.dirname(output_error_file_path), exist_ok=True)
+        # output header
+        if not settings.no_header:
+            with open(output_file_path, mode='w', encoding='UTF-8', errors='strict') as file_output:
+                print(*settings.hash_algorithms, "cleartext", sep=settings.separator, file=file_output)
+        # merge and output results temp files
+        for i, result in enumerate(segment_results):
+            print(f"\rMerging temporary files: {len(segment_results) - i} remaining          ", end="")
+            append_files(from_file=result.temp_file_path, to_file=settings.output_file)
+            # delete temp file after merge
+            if os.access(result.temp_file_path, os.W_OK):
+                os.remove(result.temp_file_path)
+        print("\rMerging temporary files: 0 remaining          ")
+        # merge and output results temp error files
+        if settings.error_file:
+            for i, result in enumerate(segment_results):
+                print(f"\rMerging temporary error files: {len(segment_results) - i} remaining          ", end="")
+                append_files(result.temp_err_file_path, output_error_file_path)
+                if os.access(result.temp_err_file_path, os.W_OK): # temp error file
+                    os.remove(result.temp_err_file_path)
+            print("\rMerging temporary error files: 0 remaining          ")
+        # delete temp directory if not PWD or not empty
+        if not os.path.abspath(settings.temp_directory) == os.path.abspath(os.getcwd()):
+            temp_path = os.path.abspath(settings.temp_directory)
+            if len(os.listdir(temp_path)) == 0: # empty temp directory
+                os.rmdir(temp_path)
+    except OSError as error:
+        print("ERR: An error occurred merging temp files, exiting.  Temp files may persist.:\n" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr
+        )
+        sys.exit(-1)
+    # show results
+    success_lines = 0
+    warning_lines = 0
+    for segment in segment_results:
+        success_lines += segment.counter_success
+        warning_lines += segment.counter_warning
+    print("Results:")
+    print(f"      Input lines: {input_file_lines}")
+    print(f"    skipped lines: {warning_lines}")
+    print(f"     Output lines: {success_lines}")
+    if success_lines != input_file_lines:
+        print("======================================================")
+        print("WARNING: Result count does not match input file lines!")
+        if success_lines > input_file_lines:
+            print(f"Note: {success_lines - input_file_lines} more output lines than input file lines:")
+            print("      Your input file may contain UTF-8 characters causing duplicate result lines")
+            print("      such as control characters, line endings, or right-to-left printing ex: arabic")
+            print("      Consider processing without multithreading (--parallel / -r)")
+            print("      Alternately clean input file or remove duplicate lines from output file. ex:")
+            print("         [sort --unique] sorted deduplicated output")
+            print("         [rli or rling] unsorted deduplicated output")
+    return 0
 
-    # Cleanup and exit
-    fileinput.close()
-    if script_arguments.output_file:
-        file_output.close()
-        if os.path.getsize(script_arguments.output_file) == 0:
-            os.remove(script_arguments.output_file)
-            print(f"No output to file ({script_arguments.output_file}), file deleted.")
-    if script_arguments.error_file:
-        file_error.close()
-        if os.path.getsize(script_arguments.error_file) == 0:
-            os.remove(script_arguments.error_file)
-    return
+def process_single(settings: HashGeneratorSettings) -> int:
+    """ Process via main thread (single-threaded) """
+    # prepare counters
+    counter_success = 0
+    counter_warning = 0
+    if settings.output_file:
+        # output to file
+        try:
+            # count lines in source file
+            try:
+                input_file_base_name = os.path.basename(settings.input_file)
+                print(f"Counting lines in '{input_file_base_name}': ", end='', flush=True)
+                input_file_lines = count_lines(os.path.abspath(settings.input_file))
+                print(input_file_lines)
+                if not isinstance(input_file_lines,int) or input_file_lines < 1:
+                    print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}," /
+                            " exiting.",
+                            file=sys.stderr
+                    )
+                    sys.exit(-1)
+            except OSError:
+                print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}," \
+                        " exiting.",
+                        file=sys.stderr
+                )
+                sys.exit(-1)
+            # process source file
+            print(f"Processing file [{input_file_base_name}]: 0% complete          ", end="")
+            update_interval = input_file_lines // 100 # ~1% progress
+            output_file_path = os.path.abspath(settings.output_file)
+            with open(file=output_file_path, mode='w', encoding="utf-8", errors='strict') as file_output:
+                line_num: int  = 1
+                for input_line in fileinput.input(files=settings.input_file):
+                    try:
+                        result_line=""
+                        for hash_name in settings.hash_algorithms:
+                            hash_hex = hash_string(input_line[0:-1], settings, hash_name)
+                            if isinstance(hash_hex,str):
+                                result_line += hash_hex + settings.separator
+                            elif isinstance(hash_hex, dict): # error
+                                raise ValueError("Hashing Error")
+                        result_line += input_line[0:-1]
+                        print(result_line, file=file_output)
+                        counter_success += 1
+                        if line_num % update_interval == 0: # update progress
+                            print(f"\rProcessing file '{input_file_base_name}': " \
+                                    f"{round((line_num / input_file_lines) * 100)}% complete          ",
+                                    end=""
+                            )
+                        line_num += 1
+                    except ValueError:
+                        if settings.verbose:
+                            print(hash_hex['message'], file=sys.stderr)
+                            print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
+                        if settings.error_file:
+                            log_errored_line(error_file=settings.error_file, line=input_line)
+                        counter_warning += 1
+                        break
+                    except IOError as error:
+                        if settings.verbose:
+                            print(f"ERR: line #{str(fileinput.lineno())} generated an error:\n" \
+                                    f"    line: {input_line[0:-1]}\n" \
+                                    f"{type(error).__name__} - {error}",
+                                    file=sys.stderr)
+                        if settings.error_file:
+                            log_errored_line(settings.error_file, input_line)
+                        counter_errors += 1
+                print(f"\rProcessing file '{input_file_base_name}': 100% complete          ")
+        except OSError as error:
+            print(f"ERR: An error occurred processing hashes to file [{output_file_path}]:\n" \
+                f"{type(error).__name__} - {error}",
+                file=sys.stderr
+            )
+        # show results
+        print("Results:")
+        print(f"      Input lines: {input_file_lines}")
+        print(f"    skipped lines: {counter_warning}")
+        print(f"     Output lines: {counter_success}")
+        if counter_success != input_file_lines:
+            print("======================================================")
+            print("WARNING: Result count does not match input file lines!")
+            if counter_success > input_file_lines:
+                print(f"Note: {counter_success - input_file_lines} more output lines than input file lines:")
+                print("      Your input file may contain UTF-8 characters causing duplicate result lines")
+                print("      such as control characters, line endings, or right-to-left printing ex: arabic")
+                print("      Consider processing without multithreading (--parallel / -r)")
+                print("      Alternately clean input file or remove duplicate lines from output file. ex:")
+                print("         [sort --unique] sorted deduplicated output")
+                print("         [rli or rling] unsorted deduplicated output")
+        return 0
+    else:
+        # output to STDOUT
+        try:
+            for input_line in fileinput.input(files=settings.input_file):
+                try:
+                    result_line=""
+                    for hash_name in settings.hash_algorithms:
+                        hash_hex = hash_string(input_line[0:-1], settings, hash_name)
+                        if isinstance(hash_hex,str):
+                            result_line += hash_hex + settings.separator
+                        elif isinstance(hash_hex, dict): # error
+                            raise ValueError("Hashing Error")
+                    result_line += input_line[0:-1]
+                    print(result_line)
+                    counter_success += 1
+                except ValueError:
+                    if settings.verbose:
+                        print(hash_hex['message'], file=sys.stderr)
+                        print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
+                    if settings.error_file:
+                        log_errored_line(error_file=settings.error_file, line=input_line)
+                    counter_warning += 1
+                    break
+                except IOError as error:
+                    if settings.verbose:
+                        print(f"ERR: line #{str(fileinput.lineno())} generated an error:\n" \
+                                f"    line: {input_line[0:-1]}\n" \
+                                f"{type(error).__name__} - {error}",
+                                file=sys.stderr)
+                    if settings.error_file:
+                        log_errored_line(settings.error_file, input_line)
+                    counter_errors += 1
+        except OSError as error:
+            print(f"ERR: An error occurred processing hashes to file [{output_file_path}]:\n" \
+                f"{type(error).__name__} - {error}",
+                file=sys.stderr
+            )
 
-#####################
-#  BEGIN PROCESSING #
-#####################
+def main() -> int:
+    """ collect arguments, parse settings and init based on threading selection """
+    # collect shell arguments and process settings
+    arguments = parse_arguments()
+    settings = parse_settings(arguments)
+
+    # TROUBLESHOOTING
+    if settings.verbose:
+        print("\n\n==============================================", file=sys.stderr)
+        print("Arguments:", file=sys.stderr)
+        print(arguments, "\n", file=sys.stderr)
+        print("----------------------------------------------", file=sys.stderr)
+        print("Settings:", file=sys.stderr)
+        print(settings, "\n", file=sys.stderr)
+        print("==============================================\n\n\n", file=sys.stderr)
+
+
+    # process job based on processes (single vs multi)
+    if settings.parallel > 1:
+        # multi-process mode
+        if len(settings.input_file) > 0:
+            process_multi(settings=settings)
+        else:
+            # fallback to single process mode for stdin
+            print("WARN: parallel processing (-p/--parallel) does not support <STDIN>:\n" \
+                    " -- reverting to single-process mode.",
+                file=sys.stderr,
+            )
+            process_single(settings=settings)
+        return 0
+    elif settings.parallel == 1:
+        # single process mode
+        process_single(settings=settings)
+        return 0
+    else:
+        # unable to determine threading
+        print("ERR: Unable to determine a threading strategy, exiting.",
+                file=sys.stderr,
+        )
+        return -1
+
+# auto start if called directly
 if __name__ == '__main__':
     sys.exit(main())
