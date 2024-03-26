@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
-# todo: verbose output across all functions
+# todo: verbose output across all functions (done through hash-string())
 # todo: handle function returns
+# todo add epilog to argparse
 
 """
 Translate a file of cleartext strings (passwords) to hashes of the specified format(s)
@@ -17,6 +18,7 @@ try:
     import argparse
     from argparse import RawDescriptionHelpFormatter
     from collections import namedtuple
+    from datetime import timedelta
     import fileinput
     import hashlib
     import multiprocessing
@@ -70,9 +72,12 @@ SUPPORTED_HASHES = [
 ]
 
 # define functions
-def append_files(from_file: str, to_file: str, block_size:int = 1048576) -> bool:
+def append_files(from_file: str, to_file: str, block_size:int = 1048576, settings: HashGeneratorSettings = None) -> bool:
     """ Append one file to another using binary read/write in 1MB blocks return 0 on success, -1 on error  """
     try:
+        # create argparse instance
+        time_start = time.time()
+        # append file
         from_file_path = os.path.abspath(from_file)
         to_file_path = os.path.abspath(to_file)
         with open(from_file_path, "rb") as file_in, open(to_file_path, "ab") as file_out:
@@ -81,6 +86,13 @@ def append_files(from_file: str, to_file: str, block_size:int = 1048576) -> bool
                 if not input_block:
                     break
                 file_out.write(input_block)
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if settings:
+            if settings.verbose >= 1:
+                print("\nVERBOSE: Appending took " \
+                    f"{timedelta(seconds=(time.time() - time_start))}: from[{from_file}] to [{to_file}]",
+                    file=sys.stderr
+                )
         return True
     except OSError as error:
         print(f"ERR: An error occurred appending file [{from_file_path}] to file[{to_file_path}]:\n" \
@@ -89,7 +101,7 @@ def append_files(from_file: str, to_file: str, block_size:int = 1048576) -> bool
         )
         return False
 
-def count_lines(file_name: str, block_size: int = 1048576) -> Union[int, bool]:
+def count_lines(file_name: str, block_size: int = 1048576, settings: HashGeneratorSettings = None) -> Union[int, bool]:
     """ Count number of lines in a file reading in [block_size] segments """
     def read_block(file, block_size):
         while True:
@@ -98,9 +110,18 @@ def count_lines(file_name: str, block_size: int = 1048576) -> Union[int, bool]:
                 break
             yield block
     try:
+        # time execution for verbose output
+        time_start = time.time()
+        # count occurrences of \n via binary block reads
         file_path = os.path.abspath(file_name)
         with open(file_path, "r", encoding="UTF-8", errors='ignore') as file:
             line_count = (sum(block.count("\n") for block in read_block(file, block_size)))
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if settings:
+            if settings.verbose >= 1:
+                print(f"\nVERBOSE: Counting Lines took {timedelta(seconds=(time.time() - time_start))} for [{file_path}]",
+                    file=sys.stderr
+        )
         return line_count
     except OSError as error:
         print(f"ERR: An error occurred counting lines in file [{file_path}]:\n" \
@@ -113,6 +134,9 @@ def parse_arguments() -> Union[argparse.Namespace, bool]:
     """ Parse shell arguments """
     # create argparse instance
     try:
+        # time execution for verbose output
+        time_start = time.time()
+        # define arguments
         arg_parser = argparse.ArgumentParser(
             formatter_class = RawDescriptionHelpFormatter,
             description =
@@ -126,6 +150,7 @@ def parse_arguments() -> Union[argparse.Namespace, bool]:
         arg_parser.add_argument(
             '-a', '--hash-algorithms',
             default = 'sha1',
+            type = str,
             help = 'Comma separated Hash list to use (default: sha1) options are: ' \
                     'sha1, sha224, sha256, sha384, sha512, ' \
                     'sha3_224, sha3_256, sha3_384, sha3_512, ' \
@@ -136,16 +161,19 @@ def parse_arguments() -> Union[argparse.Namespace, bool]:
             metavar = 'FILE',
             nargs = '?',
             default = [],
+            type = str,
             help = "The input file(s) of strings to parse, if omitted STDIN is used (comma separated)"
         )
         arg_parser.add_argument(
             '-p', '--parallel',
             default = 'a',
+            type = lambda p: p if p.isnumeric() or p.lower() == 'a'else False, # INT or A or a
             help = "Number of processes to use or 'a' (default) for automatic detection"
         )
         arg_parser.add_argument(
             '-t', '--temp-directory',
             default="./",
+            type = str,
             help = "Directory to use for temp files when --parallel is used default PWD)"
         )
         # output format
@@ -153,6 +181,7 @@ def parse_arguments() -> Union[argparse.Namespace, bool]:
         arg_group_format.add_argument(
             '-s', '--separator',
             default = ':',
+            type = str,
             help = "The column separator to use in the output (default ':')"
         )
         arg_group_format.add_argument(
@@ -163,10 +192,12 @@ def parse_arguments() -> Union[argparse.Namespace, bool]:
         )
         arg_group_format.add_argument(
             '-o', '--output-file',
+            type=str,
             help = "Output file, if omitted STDOUT is used"
         )
         arg_group_format.add_argument(
             '-e', '--error-file',
+            type=str,
             help = "Optional file to write lines that cannot be parsed"
         )
         arg_group_format.add_argument(
@@ -179,15 +210,25 @@ def parse_arguments() -> Union[argparse.Namespace, bool]:
         arg_group_verbosity = arg_group_verbosity_parent.add_mutually_exclusive_group()
         arg_group_verbosity.add_argument(
             '-v', '--verbose',
-            action='store_true',
-            help="Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)"
+            action='count',
+            default=0,
+            help='Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)\n' \
+                 '    * specify twice [-vv] for debugging (multiple messages per file line)'
+
         )
         arg_group_verbosity.add_argument(
             '-q', '--quiet',
             action='store_true',
             help="Suppress all console output (STDOUT/STDERR)"
         )
-        return arg_parser.parse_args()
+        arguments = arg_parser.parse_args()
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if arguments.verbose >= 1:
+            print(f"VERBOSE: Processing arguments took {timedelta(seconds=(time.time() - time_start))}\n" \
+                  f"VERBOSE: arguments: [{arguments}]\n",
+                file=sys.stderr
+            )
+        return arguments
     except OSError as error:
         print("ERR: An error occurred parsing arguments:\n:" \
             f"{type(error).__name__} - {error}",
@@ -197,13 +238,15 @@ def parse_arguments() -> Union[argparse.Namespace, bool]:
 
 def parse_settings(arguments: argparse.Namespace = None) -> HashGeneratorSettings:
     """ populate class settings from arguments provided by parse_arguments """
+    # time execution for verbose output
+    time_start = time.time()
     # store final settings in results
     results = {}
     # parse arguments if not present
     if arguments is None:
         arguments = parse_arguments()
     # verify successful type
-    if arguments is False:
+    if arguments is False or arguments is None:
         print("Unable to parse arguments, exiting. ", \
             file=sys.stderr
         )
@@ -260,7 +303,6 @@ def parse_settings(arguments: argparse.Namespace = None) -> HashGeneratorSetting
     bool_args = {
         'hash_upper': arguments.hash_upper,
         'no_header': arguments.no_header,
-        'verbose': arguments.verbose,
         'quiet': arguments.quiet
     }
     for key, value in bool_args.items():
@@ -268,6 +310,7 @@ def parse_settings(arguments: argparse.Namespace = None) -> HashGeneratorSetting
             results[key] = True
         else:
             results[key] = False
+    # verify argument seperator exists
     if len(arguments.separator):
         results['separator'] = arguments.separator
     else:
@@ -275,6 +318,10 @@ def parse_settings(arguments: argparse.Namespace = None) -> HashGeneratorSetting
             file=sys.stderr
         )
         sys.exit(-1)
+    # verify verbose between 0-2:
+    if 0 <= arguments.verbose <= 2:
+        results['verbose'] = int(arguments.verbose)
+
     # populate settings tuple
     settings = HashGeneratorSettings(
         hash_algorithms = results['hash_algorithms'],
@@ -289,10 +336,19 @@ def parse_settings(arguments: argparse.Namespace = None) -> HashGeneratorSetting
         verbose = results['verbose'],
         quiet = results['quiet']
     )
+    # print verbose details to STDERR to avoid polluting output in STDOUT mode
+    if settings.verbose >= 1:
+        print(f"VERBOSE: Parsing argument to settings took {timedelta(seconds=(time.time() - time_start))}\n" \
+              f"VERBOSE: Setting: [{arguments}]\n",
+            file=sys.stderr
+        )
     return settings
 
 def hash_string(text_string: str, settings: HashGeneratorSettings, hash_type: str = "sha1") -> Union[str, HashError]:
     """  Returns a hex hash based on the hash_type and text_string provided """
+    # time execution for verbose output
+    time_start = time.time()
+    # produce and return hash
     try:
         match hash_type:
             case "sha1":
@@ -322,7 +378,13 @@ def hash_string(text_string: str, settings: HashGeneratorSettings, hash_type: st
             case _:
                 print(f"hash type: {hash_type}, not supported, exiting.")
                 sys.exit(-1)
-
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if settings.verbose == 2: # specify -vv or --verbose --verbose
+            print(f"VERBOSE: hashing took {timedelta(seconds=(time.time() - time_start))}: " \
+                  f"VERBOSE: {hash_type}[{text_string}] = [{return_value}] ",
+                file=sys.stderr
+            )
+        # return hash
         if settings.hash_upper:
             return return_value.upper()
         else:
@@ -346,12 +408,15 @@ def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResu
         # open files
         os.makedirs(temp_directory, exist_ok=True)
         input_file_path = os.path.abspath(segment.file_name)
+        # create 'unique' temp file prefix
+        file_prefix = f'_hg_{int(time.time())}_'
+        # open files and process segment
         with open(input_file_path, mode='r', encoding='UTF-8', errors='strict') as file_input, \
-                open(f"{temp_directory}/_hashgen_{os.getpid()}.dat", mode='w', encoding='UTF-8') as file_temp:
+             open(f"{temp_directory}/{file_prefix}{segment.segment_number}.dat", mode='w', encoding='UTF-8') as file_temp:
                 # open(f"{temp_directory}/_hashgen_{os.getpid()}.err", mode='w', encoding='UTF-8') as file_temp_err:
             # record temp files absolute paths
             temp_file_path = os.path.abspath(file_temp.name)
-            temp_err_file_path = f"{temp_directory}/_hashgen_{os.getpid()}.err"
+            temp_err_file_path = f"{temp_directory}/{file_prefix}_{segment.segment_number}.err"
             # process chunk lines
             segment_start = segment.segment_start
             file_input.seek(segment_start)
@@ -371,7 +436,7 @@ def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResu
                     print(result_line, file=file_temp)
                     counter_success += 1
                 except ValueError:
-                    if settings.verbose:
+                    if settings.verbose >= 1:
                         print(hash_hex['message'], file=sys.stderr)
                         print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
                     if settings.error_file:
@@ -491,7 +556,7 @@ def process_multi(settings: HashGeneratorSettings) -> int:
     try:
         input_file_base_name = os.path.basename(settings.input_file)
         print(f"Counting lines in '{input_file_base_name}': ", end='', flush=True)
-        input_file_lines = count_lines(os.path.abspath(settings.input_file))
+        input_file_lines = count_lines(file_name=os.path.abspath(settings.input_file), settings=settings)
         print(input_file_lines)
         if not isinstance(input_file_lines,int) or input_file_lines < 1:
             print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}, exiting.",
@@ -548,7 +613,12 @@ def process_multi(settings: HashGeneratorSettings) -> int:
         # merge and output results temp files
         for i, result in enumerate(segment_results):
             print(f"\rMerging temporary files: {len(segment_results) - i} remaining          ", end="")
-            append_files(from_file=result.temp_file_path, to_file=settings.output_file)
+            if not append_files(from_file=result.temp_file_path, to_file=settings.output_file, settings=settings):
+                print(f"ERR: error appending {result.temp_file_path} to {settings.output_file}, exiting: " /
+                      f"temp files (prefixed with '_hg_' may still exist in [{settings.temp_directory}]",
+                      file=sys.stderr
+                )
+                sys.exit(-1)
             # delete temp file after merge
             if os.access(result.temp_file_path, os.W_OK):
                 os.remove(result.temp_file_path)
@@ -557,7 +627,12 @@ def process_multi(settings: HashGeneratorSettings) -> int:
         if settings.error_file:
             for i, result in enumerate(segment_results):
                 print(f"\rMerging temporary error files: {len(segment_results) - i} remaining          ", end="")
-                append_files(result.temp_err_file_path, output_error_file_path)
+                if not append_files(from_file=result.temp_err_file_path, to_file=output_error_file_path, settings=settings):
+                    print(f"ERR: error appending {result.temp_file_path} to {settings.output_file}, exiting: " /
+                        f"temp files (prefixed with '_hashgen_'may still exist in [{settings.temp_directory}]",
+                        file=sys.stderr
+                    )
+                    sys.exit(-1)
                 if os.access(result.temp_err_file_path, os.W_OK): # temp error file
                     os.remove(result.temp_err_file_path)
             print("\rMerging temporary error files: 0 remaining          ")
@@ -603,87 +678,122 @@ def process_single(settings: HashGeneratorSettings) -> int:
     if settings.output_file:
         # output to file
         try:
-            # count lines in source file
-            try:
-                input_file_base_name = os.path.basename(settings.input_file)
-                print(f"Counting lines in '{input_file_base_name}': ", end='', flush=True)
-                input_file_lines = count_lines(os.path.abspath(settings.input_file))
-                print(input_file_lines)
-                if not isinstance(input_file_lines,int) or input_file_lines < 1:
-                    print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}," /
+            if isinstance(settings.input_file, str) and len(settings.input_file) > 0:
+                # file input NOT <STDIN>
+                # count lines in source file
+                try:
+                    input_file_base_name = os.path.basename(settings.input_file)
+                    print(f"Counting lines in '{input_file_base_name}': ", end='', flush=True)
+                    input_file_lines = count_lines(file_name=os.path.abspath(settings.input_file), settings=settings)
+                    print(input_file_lines)
+                    if not isinstance(input_file_lines,int) or input_file_lines < 1:
+                        print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}," /
+                                " exiting.",
+                                file=sys.stderr
+                        )
+                        sys.exit(-1)
+                except OSError:
+                    print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}," \
                             " exiting.",
                             file=sys.stderr
                     )
                     sys.exit(-1)
-            except OSError:
-                print(f"ERR: Unable to count lines in file: {os.path.abspath(settings.input_file)}," \
-                        " exiting.",
-                        file=sys.stderr
-                )
-                sys.exit(-1)
-            # process source file
-            print(f"Processing file [{input_file_base_name}]: 0% complete          ", end="")
-            update_interval = input_file_lines // 100 # ~1% progress
-            output_file_path = os.path.abspath(settings.output_file)
-            with open(file=output_file_path, mode='w', encoding="utf-8", errors='strict') as file_output:
-                line_num: int  = 1
-                for input_line in fileinput.input(files=settings.input_file):
-                    try:
-                        result_line=""
-                        for hash_name in settings.hash_algorithms:
-                            hash_hex = hash_string(input_line[0:-1], settings, hash_name)
-                            if isinstance(hash_hex,str):
-                                result_line += hash_hex + settings.separator
-                            elif isinstance(hash_hex, dict): # error
-                                raise ValueError("Hashing Error")
-                        result_line += input_line[0:-1]
-                        print(result_line, file=file_output)
-                        counter_success += 1
-                        if line_num % update_interval == 0: # update progress
-                            print(f"\rProcessing file '{input_file_base_name}': " \
-                                    f"{round((line_num / input_file_lines) * 100)}% complete          ",
-                                    end=""
-                            )
-                        line_num += 1
-                    except ValueError:
-                        if settings.verbose:
-                            print(hash_hex['message'], file=sys.stderr)
-                            print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
-                        if settings.error_file:
-                            log_errored_line(error_file=settings.error_file, line=input_line)
-                        counter_warning += 1
-                        break
-                    except IOError as error:
-                        if settings.verbose:
-                            print(f"ERR: line #{str(fileinput.lineno())} generated an error:\n" \
-                                    f"    line: {input_line[0:-1]}\n" \
-                                    f"{type(error).__name__} - {error}",
-                                    file=sys.stderr)
-                        if settings.error_file:
-                            log_errored_line(settings.error_file, input_line)
-                        counter_errors += 1
-                print(f"\rProcessing file '{input_file_base_name}': 100% complete          ")
+                # process source file
+                print(f"Processing file [{input_file_base_name}]: 0% complete          ", end="")
+                update_interval = input_file_lines // 100 # ~1% progress
+                output_file_path = os.path.abspath(settings.output_file)
+                with open(file=output_file_path, mode='w', encoding="utf-8", errors='strict') as file_output:
+                    line_num: int  = 1
+                    for input_line in fileinput.input(files=settings.input_file):
+                        try:
+                            result_line=""
+                            for hash_name in settings.hash_algorithms:
+                                hash_hex = hash_string(input_line[0:-1], settings, hash_name)
+                                if isinstance(hash_hex,str):
+                                    result_line += hash_hex + settings.separator
+                                elif isinstance(hash_hex, dict): # error
+                                    raise ValueError("Hashing Error")
+                            result_line += input_line[0:-1]
+                            print(result_line, file=file_output)
+                            counter_success += 1
+                            if line_num % update_interval == 0: # update progress
+                                print(f"\rProcessing file '{input_file_base_name}': " \
+                                        f"{round((line_num / input_file_lines) * 100)}% complete          ",
+                                        end=""
+                                )
+                            line_num += 1
+                        except ValueError:
+                            if settings.verbose >= 1:
+                                print(hash_hex['message'], file=sys.stderr)
+                                print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
+                            if settings.error_file:
+                                log_errored_line(error_file=settings.error_file, line=input_line)
+                            counter_warning += 1
+                            break
+                        except IOError as error:
+                            if settings.verbose >= 1:
+                                print(f"ERR: line #{str(fileinput.lineno())} generated an error:\n" \
+                                        f"    line: {input_line[0:-1]}\n" \
+                                        f"{type(error).__name__} - {error}",
+                                        file=sys.stderr)
+                            if settings.error_file:
+                                log_errored_line(settings.error_file, input_line)
+                            counter_errors += 1
+                    print(f"\rProcessing file '{input_file_base_name}': 100% complete          ")
+                    # show results
+                    print("Results:")
+                    print(f"      Input lines: {input_file_lines}")
+                    print(f"    skipped lines: {counter_warning}")
+                    print(f"     Output lines: {counter_success}")
+                    if counter_success != input_file_lines:
+                        print("======================================================")
+                        print("WARNING: Result count does not match input file lines!")
+                        if counter_success > input_file_lines:
+                            print(f"Note: {counter_success - input_file_lines} more output lines than input file lines:")
+                            print("      Your input file may contain UTF-8 characters causing duplicate result lines")
+                            print("      such as control characters, line endings, or right-to-left printing ex: arabic")
+                            print("      Consider processing without multithreading (--parallel / -r)")
+                            print("      Alternately clean input file or remove duplicate lines from output file. ex:")
+                            print("         [sort --unique] sorted deduplicated output")
+                            print("         [rli or rling] unsorted deduplicated output")
+            else:
+                # input is <STDIN>
+                output_file_path = os.path.abspath(settings.output_file)
+                with open(file=output_file_path, mode='w', encoding="utf-8", errors='strict') as file_output:
+                    for input_line in fileinput.input(files=settings.input_file):
+                        try:
+                            result_line=""
+                            for hash_name in settings.hash_algorithms:
+                                hash_hex = hash_string(input_line[0:-1], settings, hash_name)
+                                if isinstance(hash_hex,str):
+                                    result_line += hash_hex + settings.separator
+                                elif isinstance(hash_hex, dict): # error
+                                    raise ValueError("Hashing Error")
+                            result_line += input_line[0:-1]
+                            print(result_line, file=file_output)
+                            counter_success += 1
+                        except ValueError:
+                            if settings.verbose >= 1:
+                                print(hash_hex['message'], file=sys.stderr)
+                                print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
+                            if settings.error_file:
+                                log_errored_line(error_file=settings.error_file, line=input_line)
+                            counter_warning += 1
+                            break
+                        except IOError as error:
+                            if settings.verbose >= 1:
+                                print(f"ERR: line #{str(fileinput.lineno())} generated an error:\n" \
+                                        f"    line: {input_line[0:-1]}\n" \
+                                        f"{type(error).__name__} - {error}",
+                                        file=sys.stderr)
+                            if settings.error_file:
+                                log_errored_line(settings.error_file, input_line)
+                            counter_errors += 1
         except OSError as error:
             print(f"ERR: An error occurred processing hashes to file [{output_file_path}]:\n" \
                 f"{type(error).__name__} - {error}",
                 file=sys.stderr
             )
-        # show results
-        print("Results:")
-        print(f"      Input lines: {input_file_lines}")
-        print(f"    skipped lines: {counter_warning}")
-        print(f"     Output lines: {counter_success}")
-        if counter_success != input_file_lines:
-            print("======================================================")
-            print("WARNING: Result count does not match input file lines!")
-            if counter_success > input_file_lines:
-                print(f"Note: {counter_success - input_file_lines} more output lines than input file lines:")
-                print("      Your input file may contain UTF-8 characters causing duplicate result lines")
-                print("      such as control characters, line endings, or right-to-left printing ex: arabic")
-                print("      Consider processing without multithreading (--parallel / -r)")
-                print("      Alternately clean input file or remove duplicate lines from output file. ex:")
-                print("         [sort --unique] sorted deduplicated output")
-                print("         [rli or rling] unsorted deduplicated output")
         return 0
     else:
         # output to STDOUT
@@ -701,7 +811,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                     print(result_line)
                     counter_success += 1
                 except ValueError:
-                    if settings.verbose:
+                    if settings.verbose >= 1:
                         print(hash_hex['message'], file=sys.stderr)
                         print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
                     if settings.error_file:
@@ -709,7 +819,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                     counter_warning += 1
                     break
                 except IOError as error:
-                    if settings.verbose:
+                    if settings.verbose >= 1:
                         print(f"ERR: line #{str(fileinput.lineno())} generated an error:\n" \
                                 f"    line: {input_line[0:-1]}\n" \
                                 f"{type(error).__name__} - {error}",
@@ -725,21 +835,11 @@ def process_single(settings: HashGeneratorSettings) -> int:
 
 def main() -> int:
     """ collect arguments, parse settings and init based on threading selection """
+    # time execution for verbose output
+    time_start = time.time()
     # collect shell arguments and process settings
-    arguments = parse_arguments()
-    settings = parse_settings(arguments)
-
-    # TROUBLESHOOTING
-    if settings.verbose:
-        print("\n\n==============================================", file=sys.stderr)
-        print("Arguments:", file=sys.stderr)
-        print(arguments, "\n", file=sys.stderr)
-        print("----------------------------------------------", file=sys.stderr)
-        print("Settings:", file=sys.stderr)
-        print(settings, "\n", file=sys.stderr)
-        print("==============================================\n\n\n", file=sys.stderr)
-
-
+    #arguments = parse_arguments()
+    settings = parse_settings()
     # process job based on processes (single vs multi)
     if settings.parallel > 1:
         # multi-process mode
