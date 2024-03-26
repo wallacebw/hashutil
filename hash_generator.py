@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
 
-# todo: handle function returns
-# todo add epilog to argparse
-
 """
 Translate a file of cleartext strings (passwords) to hashes of the specified format(s)
 to a text based separated file (TSV) with fields separated by -s / --separator [default ':']
@@ -737,8 +734,8 @@ def process_multi(
                             file=sys.stderr)
             print("\rMerging temporary error files: 0 remaining          ")
         # delete temp directory if not PWD or not empty
-        if not os.path.abspath(settings.temp_directory) == os.path.abspath(os.getcwd()):
-            temp_path = os.path.abspath(settings.temp_directory)
+        temp_path = os.path.abspath(settings.temp_directory)
+        if not temp_path == os.path.abspath(os.getcwd()):
             if len(os.listdir(temp_path)) == 0: # empty temp directory
                 if settings.verbose >= 1:
                     print(f"VERBOSE ({_function_name}): Deleting empty temp directory [{temp_path}]",
@@ -780,7 +777,7 @@ def process_multi(
               f"VERBOSE ({_function_name}):    Average process cpu time: {time_avg_process}\n" \
               f"VERBOSE ({_function_name}):                Elapsed time: {time_elapsed}\n" \
               f"VERBOSE ({_function_name}):     Process pool speed gain: {pool_gain}x\n" \
-              f"VERBOSE ({_function_name}):          Process efficiency: {pool_efficiency}\n" /
+              f"VERBOSE ({_function_name}):          Process efficiency: {pool_efficiency}%\n" \
               f"VERBOSE ({_function_name}):          Temp File I/O time: {time_io}\n" \
               f"VERBOSE ({_function_name}):      Process Pool loop time: {time_pool_loop}\n",
             file=sys.stderr)
@@ -1016,8 +1013,7 @@ def main() -> int:
     # verbose output prep
     time_start = time.time()
     _function_name = inspect.currentframe().f_code.co_name
-    print(f"VERBOSE ({_function_name}): Python init time: {timedelta(seconds=time.process_time())}",
-        file=sys.stderr)
+    time_init = time.process_time()
     # collect shell arguments and process settings
     settings = parse_settings()
     # process job based on processes (single vs multi)
@@ -1047,6 +1043,8 @@ def main() -> int:
         return -1
         # print verbose details to STDERR to avoid polluting output in STDOUT mode
     if settings.verbose >= 1:
+        print(f"VERBOSE ({_function_name}): Python init time time: {timedelta(seconds=time_init)}",
+            file=sys.stderr)
         print(f"VERBOSE ({_function_name}): Total execution time: {timedelta(seconds=(time.time() - time_start))}",
             file=sys.stderr)
         print(f"VERBOSE ({_function_name}): Total processor time: {timedelta(seconds=time.process_time())}",
