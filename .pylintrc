@@ -1,2 +1,3 @@
 [FORMAT]
-max-line-length=130
+max-line-length=120
+max-module-lines=5000
