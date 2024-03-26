@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
-# todo: verbose output across all functions (done through hash-string())
+# todo: verbose output across all functions (done through track-jobs())
 # todo: handle function returns
+# todo adjust all function calls to use named attributes???
 # todo add epilog to argparse
+# todo fix indents on multi-line calls to include indent on final closing element '), ], }'
 
 """
 Translate a file of cleartext strings (passwords) to hashes of the specified format(s)
@@ -62,6 +64,8 @@ SegmentResults = namedtuple('SegmentResults',[
     'temp_err_file_path', # str or None,
     'counter_success', # int,
     'counter_warning', # int
+    'time_elapsed', # float
+    'time_processor' # float
 ])
 
 # define constants
@@ -310,7 +314,7 @@ def parse_settings(arguments: argparse.Namespace = None) -> HashGeneratorSetting
             results[key] = True
         else:
             results[key] = False
-    # verify argument seperator exists
+    # verify argument separator exists
     if len(arguments.separator):
         results['separator'] = arguments.separator
     else:
@@ -400,6 +404,8 @@ def hash_string(text_string: str, settings: HashGeneratorSettings, hash_type: st
 def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResults, int]:
     """ Open input file and create & populate temporary files with results """
     try:
+        # time execution for verbose output
+        time_start = time.time()
         # define variables
         settings = HashGeneratorSettings(**settings) # convert back to named tuple (multiprocessing limitation)
         counter_success = 0
@@ -413,7 +419,6 @@ def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResu
         # open files and process segment
         with open(input_file_path, mode='r', encoding='UTF-8', errors='strict') as file_input, \
              open(f"{temp_directory}/{file_prefix}{segment.segment_number}.dat", mode='w', encoding='UTF-8') as file_temp:
-                # open(f"{temp_directory}/_hashgen_{os.getpid()}.err", mode='w', encoding='UTF-8') as file_temp_err:
             # record temp files absolute paths
             temp_file_path = os.path.abspath(file_temp.name)
             temp_err_file_path = f"{temp_directory}/{file_prefix}_{segment.segment_number}.err"
@@ -440,7 +445,7 @@ def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResu
                         print(hash_hex['message'], file=sys.stderr)
                         print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
                     if settings.error_file:
-                        log_errored_line(error_file=temp_err_file_path, line=input_line)
+                        log_errored_line(error_file=temp_err_file_path, line=input_line, settings=settings)
                     counter_warning += 1
                     break
         results = SegmentResults(
@@ -448,7 +453,9 @@ def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResu
             temp_file_path = temp_file_path,
             temp_err_file_path = temp_err_file_path,
             counter_success = counter_success,
-            counter_warning = counter_warning
+            counter_warning = counter_warning,
+            time_elapsed = timedelta(seconds=(time.time() - time_start)),
+            time_processor = time.process_time()
         )
         return results
     except OSError as error:
@@ -460,15 +467,25 @@ def hash_file_segment(segment: FileSegment, settings: dict) -> Union[SegmentResu
         )
         return False
 
-def log_errored_line(error_file: str, line: str) -> bool:
+def log_errored_line(error_file: str, line: str, settings: HashGeneratorSettings = None) -> bool:
     """ log the line producing an error to a file """
     try:
+        # time execution for verbose output
+        time_start = time.time()
+        # log error
         error_file_path = os.path.abspath(error_file)
         with open(file=error_file_path, mode='a', encoding="utf-8", errors='strict') as file_error:
             if line[-1] == '\n':
                 file_error.write(line)
             else:
                 print(line, file=file_error)
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if settings:
+            if settings.verbose == 2: # specify -vv or --verbose --verbose
+                print(f"VERBOSE: Logging error line took: {timedelta(seconds=(time.time() - time_start))}\n" \
+                      f"VERBOSE:   File: [{error_file_path}] - line[{line[0:-1]}]",
+                    file=sys.stderr
+                )
         return True
     except OSError as error:
         print(f"ERR: An error occurred logging an unprocessed line to error file [{error_file_path}]:\n" \
@@ -478,13 +495,16 @@ def log_errored_line(error_file: str, line: str) -> bool:
         )
         return False
 
-def segment_file(file_name: str, segments: int = 1) -> list:
+def segment_file(file_name: str, segments: int = 1, settings: HashGeneratorSettings = None) -> list:
     """
     Scan a file to identifying the start and end position of the defined number of
     segments, aligning each segment to the nearest line break.
         REF: https://nurdabolatov.com/parallel-processing-large-file-in-python
     """
     try:
+        # time execution for verbose output
+        time_start = time.time()
+        # segment file
         segment_number = 1
         file_path = os.path.abspath(file_name)
         file_size = os.path.getsize(file_name)
@@ -527,6 +547,14 @@ def segment_file(file_name: str, segments: int = 1) -> list:
                 segment_parts.append(segment)
                 # Move to the next chunk
                 segment_start = segment_end
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if settings:
+            if settings.verbose >= 1:
+                print(f"VERBOSE: Segmenting took: {timedelta(seconds=(time.time() - time_start))} " \
+                      f"File: [{file_path}]\nVERBOSE: Segment details:",
+                    file=sys.stderr
+                    )
+                print(*segment_parts, sep='\n')
         return segment_parts
     except OSError as error:
         print(f"ERR: An error occurred defining file segments in file [{file_path}]:\n" \
@@ -535,14 +563,31 @@ def segment_file(file_name: str, segments: int = 1) -> list:
         )
         sys.exit(-1)
 
-def track_jobs(job_pool: multiprocessing.Pool, update_interval: int = 1, message_prefix: str = "Tasks remaining: "):
+def track_jobs(
+        job_pool: multiprocessing.Pool,
+        update_interval: int = 1,
+        message_prefix: str = "Tasks remaining: ",
+        settings: HashGeneratorSettings = None
+        ):
     """ Track the status of running multi-process async pools printing status at [update_interval] """
     # pylint: disable=W0212
     try:
+        # time execution for verbose output
+        time_start = time.time()
+        thread_time_start = time.thread_time()
+        # track jobs
         while job_pool._number_left > 0:
             print(f"\r{message_prefix}{job_pool._number_left : < {len(message_prefix) + 10}}", end="")
             time.sleep(update_interval)
         print(f"\r{message_prefix}{0 : < {len(message_prefix) + 10}}")
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if settings:
+            if settings.verbose >= 1:
+                print(f"VERBOSE: job execution took: {timedelta(seconds=(time.time() - time_start))}\n" \
+                      f"VERBOSE: job tracking used: {timedelta(seconds=(time.thread_time() - thread_time_start))} processor time",
+                    file=sys.stderr
+                )
+
     except OSError as error:
         print("ERR: An error occurred tracking child processes, exiting.  Temp files may persist:\n" \
             f"{type(error).__name__} - {error}",
@@ -570,10 +615,10 @@ def process_multi(settings: HashGeneratorSettings) -> int:
         sys.exit(-1)
     # determine file segment details: errors handled by segment_file()
     if input_file_lines >= settings.parallel:
-        segment_list = segment_file(file_name=settings.input_file, segments=settings.parallel)
+        segment_list = segment_file(file_name=settings.input_file, segments=settings.parallel, settings=settings)
     else:
         #less lines in file than cores assigned
-        segment_list = segment_file(file_name=settings.input_file, segments=input_file_lines)
+        segment_list = segment_file(file_name=settings.input_file, segments=input_file_lines, settings=settings)
     # merge segment list with settings into a 2 item list matching hash_file_segment() arguments
     hash_file_segment_args = []
     for segment in segment_list:
@@ -590,7 +635,7 @@ def process_multi(settings: HashGeneratorSettings) -> int:
                 iterable=hash_file_segment_args,
                 chunksize = 1
             )
-            track_jobs(pool_results, message_prefix="Creating hashes - Jobs remaining: ")
+            track_jobs(pool_results, message_prefix="Creating hashes - Jobs remaining: ", settings=settings)
             segment_results = pool_results.get()
     except OSError as error:
         print("ERR: An error occurred starting child jobs, exiting.  Temp files may persist.:\n" \
@@ -727,7 +772,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                                 print(hash_hex['message'], file=sys.stderr)
                                 print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
                             if settings.error_file:
-                                log_errored_line(error_file=settings.error_file, line=input_line)
+                                log_errored_line(error_file=settings.error_file, line=input_line, settings=settings)
                             counter_warning += 1
                             break
                         except IOError as error:
@@ -737,7 +782,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                                         f"{type(error).__name__} - {error}",
                                         file=sys.stderr)
                             if settings.error_file:
-                                log_errored_line(settings.error_file, input_line)
+                                log_errored_line(settings.error_file, input_line, settings=settings)
                             counter_errors += 1
                     print(f"\rProcessing file '{input_file_base_name}': 100% complete          ")
                     # show results
@@ -777,7 +822,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                                 print(hash_hex['message'], file=sys.stderr)
                                 print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
                             if settings.error_file:
-                                log_errored_line(error_file=settings.error_file, line=input_line)
+                                log_errored_line(error_file=settings.error_file, line=input_line, settings=settings)
                             counter_warning += 1
                             break
                         except IOError as error:
@@ -787,7 +832,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                                         f"{type(error).__name__} - {error}",
                                         file=sys.stderr)
                             if settings.error_file:
-                                log_errored_line(settings.error_file, input_line)
+                                log_errored_line(settings.error_file, input_line, settings=settings)
                             counter_errors += 1
         except OSError as error:
             print(f"ERR: An error occurred processing hashes to file [{output_file_path}]:\n" \
@@ -815,7 +860,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                         print(hash_hex['message'], file=sys.stderr)
                         print(f"{hash_hex['name']} - {hash_hex['details']}", file=sys.stderr)
                     if settings.error_file:
-                        log_errored_line(error_file=settings.error_file, line=input_line)
+                        log_errored_line(error_file=settings.error_file, line=input_line, settings=settings)
                     counter_warning += 1
                     break
                 except IOError as error:
@@ -825,7 +870,7 @@ def process_single(settings: HashGeneratorSettings) -> int:
                                 f"{type(error).__name__} - {error}",
                                 file=sys.stderr)
                     if settings.error_file:
-                        log_errored_line(settings.error_file, input_line)
+                        log_errored_line(settings.error_file, input_line, settings=settings)
                     counter_errors += 1
         except OSError as error:
             print(f"ERR: An error occurred processing hashes to file [{output_file_path}]:\n" \
@@ -852,17 +897,23 @@ def main() -> int:
                 file=sys.stderr,
             )
             process_single(settings=settings)
-        return 0
     elif settings.parallel == 1:
         # single process mode
         process_single(settings=settings)
-        return 0
     else:
         # unable to determine threading
         print("ERR: Unable to determine a threading strategy, exiting.",
                 file=sys.stderr,
         )
         return -1
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+    if settings.verbose >= 1:
+        print(f"VERBOSE: Total execution time: {timedelta(seconds=(time.time() - time_start))}",
+            file=sys.stderr
+        )
+        print(f"VERBOSE: Total processor time: {timedelta(seconds=time.process_time())}",
+            file=sys.stderr
+        )
 
 # auto start if called directly
 if __name__ == '__main__':
