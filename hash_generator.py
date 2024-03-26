@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
 
+# todo: attempt to decode $HEX[] strings based for output
+    # bytes.fromhex('????').decode(encoding='latin1')
+
 """
 Translate a file of cleartext strings (passwords) to hashes of the specified format(s)
 to a text based separated file (TSV) with fields separated by -s / --separator [default ':']
@@ -25,7 +28,6 @@ try:
     import time
     from typing import Union
 except ImportError as import_error:
-    # pylint: disable=R1722
     print(f"An error occurred importing libraries:\n {type(import_error).__name__} - {import_error}")
     quit()
 
@@ -37,6 +39,7 @@ HashError = namedtuple('HashError',[
 ])
 HashGeneratorSettings = namedtuple('Settings',[
     'hash_algorithms', # list
+    'decode_hex', # bool
     'hash_upper', # bool
     'input_file', # str
     'parallel', # int or 'a'
@@ -151,7 +154,7 @@ def parse_arguments(
             description =
                 "Translate a file of cleartext strings (passwords) to hashes of the specified format(s)\n" \
                 "to a text based separated file (TSV) with fields separated by -s / --separator [default ':']\n" \
-                "NOTE: The field separator may be in the cleartext string\n" \
+                "NOTE: The field separator may be in the cleartext string which is always last output field\n" \
                 "NOTE: Non-printable UTF-8 characters are retained in the output\n" \
                 "      Some UTF-8 characters result in duplicate lines if the file is segmented (-p/--parallel)\n" \
                 "      Characters not valid in UTF-8 will cause the line to be skipped")
@@ -164,6 +167,12 @@ def parse_arguments(
                     'sha1, sha224, sha256, sha384, sha512, ' \
                     'sha3_224, sha3_256, sha3_384, sha3_512, ' \
                     'blake2b, blake2s, md5')
+        arg_parser.add_argument(
+            '-d', '--decode_hex',
+            action = 'store_true',
+            default = False,
+            help = "Attempt to convert hashcat hex encoded passwords to ASCII prior to hashing: "\
+                   "(ex: $HEX[313233] to '123')")
         arg_parser.add_argument(
             '-i', '--input-file',
             metavar = 'FILE',
@@ -292,6 +301,7 @@ def parse_settings(
             results[key] = None
     # parse bool values
     bool_args = {
+        'decode_hex': arguments.decode_hex,
         'hash_upper': arguments.hash_upper,
         'no_header': arguments.no_header,
         'quiet': arguments.quiet}
@@ -312,6 +322,7 @@ def parse_settings(
     # populate settings tuple
     settings = HashGeneratorSettings(
         hash_algorithms = results['hash_algorithms'],
+        decode_hex= results['decode_hex'],
         parallel = results['parallel'],
         separator = results['separator'],
         input_file = results['input_file'],
@@ -336,6 +347,8 @@ def hash_string(
         hash_type: str = "sha1"
     ) -> Union[str, HashError]:
     """  Returns a hex hash based on the hash_type and text_string provided """
+    # pylint: disable=used-before-assignment
+        # false positive
     # verbose output prep
     if settings.verbose == 2:
         # due to high frequency use of this function and inspect's overhead, only call if required
@@ -343,34 +356,70 @@ def hash_string(
         _function_name = inspect.currentframe().f_code.co_name
     # produce and return hash
     try:
-        match hash_type:
-            case "sha1":
-                return_value = hashlib.sha1(text_string.encode()).hexdigest()
-            case "sha224":
-                return_value = hashlib.sha224(text_string.encode()).hexdigest()
-            case "sha256":
-                return_value = hashlib.sha256(text_string.encode()).hexdigest()
-            case "sha384":
-                return_value = hashlib.sha384(text_string.encode()).hexdigest()
-            case "sha512":
-                return_value = hashlib.sha512(text_string.encode()).hexdigest()
-            case "sha3_224":
-                return_value = hashlib.sha3_224(text_string.encode()).hexdigest()
-            case "sha3_256":
-                return_value = hashlib.sha3_256(text_string.encode()).hexdigest()
-            case "sha3_384":
-                return_value = hashlib.sha3_384(text_string.encode()).hexdigest()
-            case "sha3_512":
-                return_value = hashlib.sha3_512(text_string.encode()).hexdigest()
-            case "blake2b":
-                return_value = hashlib.blake2b(text_string.encode()).hexdigest()
-            case "blake2s":
-                return_value = hashlib.blake2s(text_string.encode()).hexdigest()
-            case "md5":
-                return_value = hashlib.md5(text_string.encode()).hexdigest()
-            case _:
-                print(f"hash type: {hash_type}, not supported, exiting.")
-                sys.exit(-1)
+        if settings.decode_hex:
+            # get the byte string for the hex value
+            if text_string[0:5].upper() == '$HEX[' and text_string[-1] == ']':
+                byte_string = bytes.fromhex(text_string[5:-1])
+            else:
+                byte_string= False
+        if byte_string:
+            match hash_type:
+                case "sha1":
+                    return_value = hashlib.sha1(byte_string).hexdigest()
+                case "sha224":
+                    return_value = hashlib.sha224(byte_string).hexdigest()
+                case "sha256":
+                    return_value = hashlib.sha256(byte_string).hexdigest()
+                case "sha384":
+                    return_value = hashlib.sha384(byte_string).hexdigest()
+                case "sha512":
+                    return_value = hashlib.sha512(byte_string).hexdigest()
+                case "sha3_224":
+                    return_value = hashlib.sha3_224(byte_string).hexdigest()
+                case "sha3_256":
+                    return_value = hashlib.sha3_256(byte_string).hexdigest()
+                case "sha3_384":
+                    return_value = hashlib.sha3_384(byte_string).hexdigest()
+                case "sha3_512":
+                    return_value = hashlib.sha3_512(byte_string).hexdigest()
+                case "blake2b":
+                    return_value = hashlib.blake2b(byte_string).hexdigest()
+                case "blake2s":
+                    return_value = hashlib.blake2s(byte_string).hexdigest()
+                case "md5":
+                    return_value = hashlib.md5(byte_string).hexdigest()
+                case _:
+                    print(f"hash type: {hash_type}, not supported, exiting.")
+                    sys.exit(-1)
+        else:
+            match hash_type:
+                case "sha1":
+                    return_value = hashlib.sha1(text_string.encode()).hexdigest()
+                case "sha224":
+                    return_value = hashlib.sha224(text_string.encode()).hexdigest()
+                case "sha256":
+                    return_value = hashlib.sha256(text_string.encode()).hexdigest()
+                case "sha384":
+                    return_value = hashlib.sha384(text_string.encode()).hexdigest()
+                case "sha512":
+                    return_value = hashlib.sha512(text_string.encode()).hexdigest()
+                case "sha3_224":
+                    return_value = hashlib.sha3_224(text_string.encode()).hexdigest()
+                case "sha3_256":
+                    return_value = hashlib.sha3_256(text_string.encode()).hexdigest()
+                case "sha3_384":
+                    return_value = hashlib.sha3_384(text_string.encode()).hexdigest()
+                case "sha3_512":
+                    return_value = hashlib.sha3_512(text_string.encode()).hexdigest()
+                case "blake2b":
+                    return_value = hashlib.blake2b(text_string.encode()).hexdigest()
+                case "blake2s":
+                    return_value = hashlib.blake2s(text_string.encode()).hexdigest()
+                case "md5":
+                    return_value = hashlib.md5(text_string.encode()).hexdigest()
+                case _:
+                    print(f"hash type: {hash_type}, not supported, exiting.")
+                    sys.exit(-1)
         # print verbose details to STDERR to avoid polluting output in STDOUT mode
         if settings.verbose == 2: # specify -vv or --verbose --verbose
             print(f"VERBOSE ({_function_name}): hashing took {timedelta(seconds=(time.time() - time_start))} | " \
@@ -569,7 +618,7 @@ def track_jobs(
         settings: HashGeneratorSettings = None
     ) -> None:
     """ Track the status of running multi-process async pools printing status at [update_interval] """
-    # pylint: disable=W0212
+    # pylint: disable=protected-access
     # (referencing functions prefixed with _)
     try:
         # verbose output prep
