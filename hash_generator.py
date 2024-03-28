@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
 
-# todo: attempt to decode $HEX[] strings based for output
-    # bytes.fromhex('????').decode(encoding='latin1')
-
 """
 Translate a file of cleartext strings (passwords) to hashes of the specified format(s)
 to a text based separated file (TSV) with fields separated by -s / --separator [default ':']
@@ -29,7 +26,7 @@ try:
     from typing import Union
 except ImportError as import_error:
     print(f"An error occurred importing libraries:\n {type(import_error).__name__} - {import_error}")
-    quit()
+    quit(-1)
 
 # define named tuples
 HashError = namedtuple('HashError',[
@@ -37,9 +34,15 @@ HashError = namedtuple('HashError',[
     'error_details', # error
     'message' # str
 ])
+HexError = namedtuple('HexError',[
+    'error_name', # type(error).__name__
+    'error_details', # error
+    'message' # str
+])
 HashGeneratorSettings = namedtuple('Settings',[
     'hash_algorithms', # list
     'decode_hex', # bool
+    'encodings', # str
     'hash_upper', # bool
     'input_file', # str
     'parallel', # int or 'a'
@@ -72,6 +75,34 @@ SUPPORTED_HASHES = [
     "sha1", "sha224", "sha256", "sha284", "sha512", #SHA
     "sha3_224", "sha3_384", "sha3_512", # SHA3
     "blake2b", "blake2s", "md5"] # Misc
+SUPPORTED_ENCODINGS = [
+    'ascii', 'latin_1', 'utf_8', # common
+    'cp037', 'cp437', 'cp500', 'cp863', 'cp850', 'cp852', 'cp858', 'cp1140', 'cp1250',  # English / Europe
+    'cp1252', 'iso8859_2', 'iso8859_15', 'iso8859_16', 'mac_latin2', 'mac_roman', # English / Europe
+    'utf_7', 'utf_8_sig', 'utf_16', 'utf_32', 'utf_16_be', 'utf_16_le', 'utf_32_be', 'utf_32_le', # UTF
+    'big5', 'big5hkscs', 'cp950', 'gb2312', 'gbk', 'gb18030', 'hz', # chinese
+    'cp932', 'euc_jp', 'euc_jis_2004', 'euc_jisx0213', 'iso2022_jp', 'iso2022_jp_1', # Japanese
+    'iso2022_jp_2', 'iso2022_jp_2004', 'iso2022_jp_3', 'iso2022_jp_ext', # Japanese
+    'shift_jis', 'shift_jis_2004', 'shift_jisx0213', # Japanese
+    'cp855', 'cp866', 'cp1125', 'cp1251', 'iso8859_5', 'koi8_r', 'koi8_u', 'mac_cyrillic',# Russian / Ukrainian
+    'cp720', 'cp864', 'cp1256', 'iso8859_6', # Arabic
+    'cp860', # Spanish / Portuguese
+    'cp949', 'euc_kr', 'iso2022_kr', 'johab', # Korean
+    'cp273', #German
+    'cp737', 'cp869', 'cp875', 'cp1253', 'iso8859_7', 'mac_greek', # Greek
+    'cp424', 'cp856', 'cp862', 'cp1255', 'iso8859_8', # Hebrew
+    'cp857', 'cp1026', 'cp1254', 'iso8859_9', 'mac_turkish', # Turkish
+    'cp775', 'cp1257', 'iso8859_4', 'iso8859_13', # Baltic
+    'cp861', 'iso8859_10', 'mac_iceland', # Icelandic / Nordic
+    'cp865', # Danish
+    'cp874','iso8859_11', # Thai
+    'koi8_t',  # Tajik
+    'cp1258', # Vietnamese
+    'cp1006',  #Urdu
+    'kz1048', 'ptcp154', # Kazakh
+    'iso8859_14', # Celtic
+    'iso8859_3', #Esperanto, Maltese
+]
 
 # define functions
 def append_files(
@@ -140,8 +171,43 @@ def count_lines(
             file=sys.stderr)
         sys.exit(-1)
 
+def decode_hex(
+        hex_string: str,
+        settings: HashGeneratorSettings = None
+    ) -> Union[str, HexError]:
+    """ convert a binary string of unknown encoding to the most predominant text via a list of codecs """
+    try:
+        if settings.verbose == 2:
+            # due to high frequency use of this function and inspect's overhead, only call if required
+            time_start = time.time()
+            _function_name = inspect.currentframe().f_code.co_name
+        # test all requested encodings
+        clear_texts = []
+        if settings.encodings:
+            for encoding in settings.encodings:
+                clear_texts.append(bytes.fromhex(hex_string).decode(encoding=encoding, errors='replace'))
+        else:
+            for encoding in SUPPORTED_ENCODINGS:
+                clear_texts.append(bytes.fromhex(hex_string).decode(encoding=encoding, errors='replace'))
+        # identify the most common cleartext equivalent
+        result_set = dict(zip(clear_texts,[clear_texts.count(i) for i in clear_texts]))
+        most_common = repr(max(result_set, key = lambda x: result_set[x]))[1:-1]
+        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+        if settings.verbose == 2: # specify -vv or --verbose --verbose
+            print(f"VERBOSE ({_function_name}): Decoding hex took {timedelta(seconds=(time.time() - time_start))} " \
+                  f"Result set:",
+                file=sys.stderr)
+            print(result_set, file=sys.stderr)
+        return most_common
+    except OSError as error:
+        error_return = HexError(
+        error_name = type(error).__name__,
+        error_details = error,
+        message = f"ERROR: An error occurred decoding {hex_string} with encoding [{encoding}]:")
+        return error_return
+
 def parse_arguments(
-    ) -> Union[argparse.Namespace, bool]:
+    ) -> Union[argparse.ArgumentParser, bool]:
     """ Parse shell arguments """
     # create argparse instance
     try:
@@ -156,6 +222,7 @@ def parse_arguments(
                 "to a text based separated file (TSV) with fields separated by -s / --separator [default ':']\n" \
                 "NOTE: The field separator may be in the cleartext string which is always last output field\n" \
                 "NOTE: Non-printable UTF-8 characters are retained in the output\n" \
+                "NOTE: Hex values matching the pattern '$HEX[...]' are converted and hashed \n" \
                 "      Some UTF-8 characters result in duplicate lines if the file is segmented (-p/--parallel)\n" \
                 "      Characters not valid in UTF-8 will cause the line to be skipped")
         # general arguments
@@ -167,12 +234,6 @@ def parse_arguments(
                     'sha1, sha224, sha256, sha384, sha512, ' \
                     'sha3_224, sha3_256, sha3_384, sha3_512, ' \
                     'blake2b, blake2s, md5')
-        arg_parser.add_argument(
-            '-d', '--decode_hex',
-            action = 'store_true',
-            default = False,
-            help = "Attempt to convert hashcat hex encoded passwords to ASCII prior to hashing: "\
-                   "(ex: $HEX[313233] to '123')")
         arg_parser.add_argument(
             '-i', '--input-file',
             metavar = 'FILE',
@@ -190,6 +251,22 @@ def parse_arguments(
             default="./",
             type = str,
             help = "Directory to use for temp files when --parallel is used default PWD)")
+        # Hex Processing
+        arg_group_hex = arg_parser.add_argument_group('Hex Processing')
+        arg_group_hex.add_argument(
+            '-d', '--decode_hex',
+            action = 'store_true',
+            default = False,
+            help = "Best attempt conversion of hex encoded values to strings in additional 'decoded_clear' column: " \
+                   "(ex: $HEX[313233] to '123').  Non-printable characters are escaped (\\x??) " \
+                   "Only recommended for hashcat style files. See also -e/--encoding")
+        arg_group_hex.add_argument(
+            '--encodings',
+            type = str,
+            default = None,
+            help = "CSV list of text encoding to attempt in decoding hex strings (-d).  " \
+                   "Default: internal list of all encodings. " \
+                   "REF: https://docs.python.org/3/library/codecs.html#standard-encodings")
         # output format
         arg_group_format = arg_parser.add_argument_group('Output Formatting')
         arg_group_format.add_argument(
@@ -221,8 +298,8 @@ def parse_arguments(
             '-v', '--verbose',
             action='count',
             default=0,
-            help='Verbose reporting of warnings (skipped lines) to STDERR (see -e switch)\n' \
-                 '    * specify twice [-vv] for debugging (multiple messages per file line)')
+            help='Verbose reporting of warnings (skipped lines) to STDERR (see -e)\n' \
+                 '*** specify twice [-vv] for debugging (multiple messages per file line ***)')
         arg_group_verbosity.add_argument(
             '-q', '--quiet',
             action='store_true',
@@ -234,7 +311,7 @@ def parse_arguments(
                   f"{timedelta(seconds=(time.time() - time_start))}\n" \
                   f"VERBOSE ({_function_name}): arguments: [{arguments}]\n",
                 file=sys.stderr)
-        return arguments
+        return arg_parser
     except OSError as error:
         print("ERROR: An error occurred parsing arguments:\n:" \
             f"{type(error).__name__} - {error}",
@@ -265,6 +342,17 @@ def parse_settings(
             print(f"ERROR: hash type: {hash_name}, not supported, exiting.", file=sys.stderr)
             sys.exit(-1)
     results['hash_algorithms'] = hash_list
+    # Verify encoding list (if specified) includes only supported encodings
+    if not arguments.encodings is None:
+        encodings = str(arguments.encodings).lower().split(",")
+        encodings[:] = [entry.strip() for entry in encodings] # strip spaces from entries
+        for encoding in encodings:
+            if encoding not in SUPPORTED_ENCODINGS:
+                print(f"ERROR: encoding type: {encoding}, not supported, exiting.", file=sys.stderr)
+                sys.exit(-1)
+        results['encodings'] = encodings
+    else:
+        results['encodings'] = None
     # process threading argument
     if arguments.parallel:
         # automatic processor detection
@@ -322,7 +410,8 @@ def parse_settings(
     # populate settings tuple
     settings = HashGeneratorSettings(
         hash_algorithms = results['hash_algorithms'],
-        decode_hex= results['decode_hex'],
+        decode_hex = results['decode_hex'],
+        encodings = results['encodings'],
         parallel = results['parallel'],
         separator = results['separator'],
         input_file = results['input_file'],
@@ -356,12 +445,11 @@ def hash_string(
         _function_name = inspect.currentframe().f_code.co_name
     # produce and return hash
     try:
-        if settings.decode_hex:
-            # get the byte string for the hex value
-            if text_string[0:5].upper() == '$HEX[' and text_string[-1] == ']':
-                byte_string = bytes.fromhex(text_string[5:-1])
-            else:
-                byte_string= False
+        # get the byte string from hex value entries
+        if text_string[0:5].upper() == '$HEX[' and text_string[-1] == ']':
+            byte_string = bytes.fromhex(text_string[5:-1])
+        else:
+            byte_string= False
         if byte_string:
             match hash_type:
                 case "sha1":
@@ -480,6 +568,15 @@ def hash_file_segment(
                         elif isinstance(hash_hex, dict): # error
                             raise ValueError("Hashing Error")
                     result_line += input_line[0:-1]
+                    if settings.decode_hex:
+                        if input_line[0:5].upper() == '$HEX[' and input_line[-2] == ']':
+                            decoded_input = decode_hex(input_line[5:-2], settings=settings)
+                            if isinstance(decode_hex, HexError):
+                                result_line += settings.separator
+                            else:
+                                result_line +=  f"{settings.separator}{decoded_input}"
+                        else:
+                            result_line +=  f"{settings.separator}{input_line[0:-1]}"
                     print(result_line, file=file_temp)
                     counter_success += 1
                 except ValueError:
@@ -734,7 +831,11 @@ def process_multi(
                       f"[{os.path.dirname(output_file_path)}]",
                     file=sys.stderr)
             with open(output_file_path, mode='w', encoding='UTF-8', errors='strict') as file_output:
-                print(*settings.hash_algorithms, "cleartext", sep=settings.separator, file=file_output)
+                if settings.decode_hex:
+                    print(*settings.hash_algorithms, "cleartext", "decoded_clear", sep=settings.separator,  \
+                           file=file_output)
+                else:
+                    print(*settings.hash_algorithms, "cleartext", sep=settings.separator, file=file_output)
         else:
             if settings.verbose >= 1:
                 print(f"VERBOSE ({_function_name}): Output header skipped, setting [no_header] = False",
@@ -888,7 +989,15 @@ def process_single(
                         file=sys.stderr)
                 print(f"Processing file [{input_file_base_name}]: 0% complete          ", end="")
                 with open(file=output_file_path, mode='w', encoding="utf-8", errors='strict') as file_output:
+                    # print header
+                    if not settings.no_header:
+                        if settings.decode_hex:
+                            print(*settings.hash_algorithms, "cleartext", "decoded_clear", sep=settings.separator,  \
+                            file=file_output)
+                        else:
+                            print(*settings.hash_algorithms, "cleartext", sep=settings.separator, file=file_output)
                     line_number: int  = 1
+                    # process lines
                     for input_line in fileinput.input(files=settings.input_file):
                         try:
                             result_line=""
@@ -899,6 +1008,15 @@ def process_single(
                                 elif isinstance(hash_hex, dict): # error
                                     raise ValueError("Hashing Error")
                             result_line += input_line[0:-1]
+                            if settings.decode_hex:
+                                if input_line[0:5].upper() == '$HEX[' and input_line[-2] == ']':
+                                    decoded_input = decode_hex(input_line[5:-2], settings=settings)
+                                    if isinstance(decode_hex, HexError):
+                                        result_line += settings.separator
+                                    else:
+                                        result_line +=  f"{settings.separator}{decoded_input}"
+                                else:
+                                    result_line +=  f"{settings.separator}{input_line[0:-1]}"
                             print(result_line, file=file_output)
                             counter_success += 1
                             if line_number % update_interval == 0: # update progress
@@ -954,6 +1072,14 @@ def process_single(
                     print(f"VERBOSE ({_function_name}): file based output [{output_file_path}]", file=sys.stderr)
                 with open(file=output_file_path, mode='w', encoding="utf-8", errors='strict') as file_output:
                     input_file_lines: int = 0
+                    # print header
+                    if not settings.no_header:
+                        if settings.decode_hex:
+                            print(*settings.hash_algorithms, "cleartext", "decoded_clear", sep=settings.separator,  \
+                            file=file_output)
+                        else:
+                            print(*settings.hash_algorithms, "cleartext", sep=settings.separator, file=file_output)
+                    # process lines
                     for input_line in fileinput.input(files=settings.input_file):
                         try:
                             input_file_lines += 1
@@ -965,6 +1091,15 @@ def process_single(
                                 elif isinstance(hash_hex, dict): # error
                                     raise ValueError("Hashing Error")
                             result_line += input_line[0:-1]
+                            if settings.decode_hex:
+                                if input_line[0:5].upper() == '$HEX[' and input_line[-2] == ']':
+                                    decoded_input = decode_hex(input_line[5:-2], settings=settings)
+                                    if isinstance(decode_hex, HexError):
+                                        result_line += settings.separator
+                                    else:
+                                        result_line +=  f"{settings.separator}{decoded_input}"
+                                else:
+                                    result_line +=  f"{settings.separator}{input_line[0:-1]}"
                             print(result_line, file=file_output)
                             counter_success += 1
                         except ValueError:
@@ -1007,6 +1142,13 @@ def process_single(
         # output to STDOUT
         try:
             input_file_lines: int = 0
+            # print header
+            if not settings.no_header:
+                if settings.decode_hex:
+                    print(*settings.hash_algorithms, "cleartext", "decoded_clear", sep=settings.separator)
+                else:
+                    print(*settings.hash_algorithms, "cleartext", sep=settings.separator)
+            # process lines
             for input_line in fileinput.input(files=settings.input_file):
                 if input_file_lines == 0:
                     if settings.verbose:
@@ -1024,6 +1166,15 @@ def process_single(
                         elif isinstance(hash_hex, dict): # error
                             raise ValueError("Hashing Error")
                     result_line += input_line[0:-1]
+                    if settings.decode_hex:
+                        if input_line[0:5].upper() == '$HEX[' and input_line[-2] == ']':
+                            decoded_input = decode_hex(input_line[5:-2], settings=settings)
+                            if isinstance(decode_hex, HexError):
+                                result_line += settings.separator
+                            else:
+                                result_line +=  f"{settings.separator}{decoded_input}"
+                        else:
+                            result_line +=  f"{settings.separator}{input_line[0:-1]}"
                     print(result_line)
                     counter_success += 1
                 except ValueError:
@@ -1064,11 +1215,16 @@ def main() -> int:
     _function_name = inspect.currentframe().f_code.co_name
     time_init = time.process_time()
     # collect shell arguments and process settings
-    settings = parse_settings()
+    arg_parser = parse_arguments()
+    settings = parse_settings(arguments=arg_parser.parse_args())
+    # check if scripts expects data over <STDIN> and return help screen if TTY detected
+    if not isinstance(settings.input_file, str) and sys.stdin.isatty():
+        arg_parser.print_help()
+        sys.exit(0)
     # process job based on processes (single vs multi)
     if settings.parallel > 1:
         # multi-process mode
-        if len(settings.input_file) > 0:
+        if len(settings.input_file) > 0 and settings.output_file:
             if settings.verbose >= 1:
                 print(f"VERBOSE ({_function_name}): Parallel execution selected with file based input.",
                     file=sys.stderr)
@@ -1076,7 +1232,8 @@ def main() -> int:
         else:
             # fallback to single process mode for stdin
             if settings.verbose >= 1:
-                print(f"VERBOSE ({_function_name}): Parallel not supported with <STDIN>, using single threaded.",
+                print(f"VERBOSE ({_function_name}): Parallel not supported with <STDIN> or <STDOUT>,\n" \
+                       "Specify both input and output files (ref: -i & -o), using single threaded.",
                     file=sys.stderr)
             process_single(settings=settings)
     elif settings.parallel == 1:
@@ -1090,7 +1247,7 @@ def main() -> int:
         print("ERROR: Unable to determine a threading strategy, exiting.",
                 file=sys.stderr,)
         return -1
-        # print verbose details to STDERR to avoid polluting output in STDOUT mode
+    # print verbose details to STDERR to avoid polluting output in STDOUT mode
     if settings.verbose >= 1:
         print(f"VERBOSE ({_function_name}): Python init time time: {timedelta(seconds=time_init)}",
             file=sys.stderr)
@@ -1098,6 +1255,7 @@ def main() -> int:
             file=sys.stderr)
         print(f"VERBOSE ({_function_name}): Total processor time: {timedelta(seconds=time.process_time())}",
             file=sys.stderr)
+
 
 # auto start if called directly
 if __name__ == '__main__':
