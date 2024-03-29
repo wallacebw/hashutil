@@ -511,7 +511,6 @@ def hash_file_segment(
                     if settings.error_file:
                         log_errored_line(error_file=temp_err_file_path, line=input_line, settings=settings)
                     counter_warning += 1
-                    break
         results = SegmentResults(
             segment_number = segment.segment_number,
             temp_file_path = temp_file_path,
@@ -939,7 +938,6 @@ def process_single(
                             if settings.error_file:
                                 log_errored_line(error_file=settings.error_file, line=input_line, settings=settings)
                             counter_warning += 1
-                            break
                         except IOError as error:
                             if settings.verbose >= 1:
                                 print(f"ERROR: line #{str(fileinput.lineno())} generated an error:\n" \
@@ -1004,7 +1002,6 @@ def process_single(
                             if settings.error_file:
                                 log_errored_line(error_file=settings.error_file, line=input_line, settings=settings)
                             counter_warning += 1
-                            break
                         except IOError as error:
                             if settings.verbose >= 1:
                                 print(f"ERROR: line #{str(fileinput.lineno())} generated an error:\n" \
@@ -1067,7 +1064,6 @@ def process_single(
                     if settings.error_file:
                         log_errored_line(error_file=settings.error_file, line=input_line, settings=settings)
                     counter_warning += 1
-                    break
                 except IOError as error:
                     if settings.verbose >= 1:
                         print(f"ERROR: line #{str(fileinput.lineno())} generated an error:\n" \
