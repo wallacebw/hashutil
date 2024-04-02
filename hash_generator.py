@@ -73,34 +73,7 @@ SUPPORTED_HASHES = [
     "sha1", "sha224", "sha256", "sha384", "sha512", #SHA
     "sha3_224", "sha3_256", "sha3_384", "sha3_512", # SHA3
     "blake2b", "blake2s", "md5"] # Misc
-SUPPORTED_ENCODINGS = [
-    'ascii', 'latin_1', 'utf_8', # common
-    'cp037', 'cp437', 'cp500', 'cp863', 'cp850', 'cp852', 'cp858', 'cp1140', 'cp1250',  # English / Europe
-    'cp1252', 'iso8859_2', 'iso8859_15', 'iso8859_16', 'mac_latin2', 'mac_roman', # English / Europe
-    'utf_7', 'utf_8_sig', 'utf_16', 'utf_32', 'utf_16_be', 'utf_16_le', 'utf_32_be', 'utf_32_le', # UTF
-    'big5', 'big5hkscs', 'cp950', 'gb2312', 'gbk', 'gb18030', 'hz', # chinese
-    'cp932', 'euc_jp', 'euc_jis_2004', 'euc_jisx0213', 'iso2022_jp', 'iso2022_jp_1', # Japanese
-    'iso2022_jp_2', 'iso2022_jp_2004', 'iso2022_jp_3', 'iso2022_jp_ext', # Japanese
-    'shift_jis', 'shift_jis_2004', 'shift_jisx0213', # Japanese
-    'cp855', 'cp866', 'cp1125', 'cp1251', 'iso8859_5', 'koi8_r', 'koi8_u', 'mac_cyrillic',# Russian / Ukrainian
-    'cp720', 'cp864', 'cp1256', 'iso8859_6', # Arabic
-    'cp860', # Spanish / Portuguese
-    'cp949', 'euc_kr', 'iso2022_kr', 'johab', # Korean
-    'cp273', #German
-    'cp737', 'cp869', 'cp875', 'cp1253', 'iso8859_7', 'mac_greek', # Greek
-    'cp424', 'cp856', 'cp862', 'cp1255', 'iso8859_8', # Hebrew
-    'cp857', 'cp1026', 'cp1254', 'iso8859_9', 'mac_turkish', # Turkish
-    'cp775', 'cp1257', 'iso8859_4', 'iso8859_13', # Baltic
-    'cp861', 'iso8859_10', 'mac_iceland', # Icelandic / Nordic
-    'cp865', # Danish
-    'cp874','iso8859_11', # Thai
-    'koi8_t',  # Tajik
-    'cp1258', # Vietnamese
-    'cp1006',  #Urdu
-    'kz1048', 'ptcp154', # Kazakh
-    'iso8859_14', # Celtic
-    'iso8859_3', #Esperanto, Maltese
-]
+
 
 # define functions
 def append_files(
