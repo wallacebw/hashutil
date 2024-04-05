@@ -353,7 +353,15 @@ def hash_string(
     try:
         # get the byte string from hex value entries
         if text_string[0:5].upper() == '$HEX[' and text_string[-1] == ']':
-            byte_string = bytes.fromhex(text_string[5:-1])
+            try:
+                byte_string = bytes.fromhex(text_string[5:-1])
+            except (UnboundLocalError, ValueError):
+                # invalid hex
+                byte_string= False
+                if settings.verbose >= 1:
+                    print(f"VERBOSE (hash_string): invalid hex string detected [{text_string[5:-1]}] " \
+                          f"treating value [{text_string}] as text.",
+                        file=sys.stderr)
         else:
             byte_string= False
         if byte_string:

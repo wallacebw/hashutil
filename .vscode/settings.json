@@ -6,6 +6,7 @@
         "getpid",
         "hashcat",
         "hashgen",
+        "ispkg",
         "rling",
         "surrogateescape",
         "tqdm"
