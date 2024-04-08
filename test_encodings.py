@@ -56,7 +56,6 @@ def get_encodings() -> list:
         # Non-text encodings
         'rot_13'
         ])
-
     supported_encodings = set(name for imp, name, ispkg in pkgutil.iter_modules(encodings.__path__) if not ispkg)
     supported_encodings.difference_update(false_positives)
     supported_encodings = sorted(supported_encodings)
