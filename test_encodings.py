@@ -15,8 +15,7 @@ except ImportError as import_error:
     quit(-1)
 
 # define functions
-def parse_arguments(
-    ) -> Union[argparse.ArgumentParser, bool]:
+def parse_arguments() -> Union[argparse.ArgumentParser, bool]:
     """ Parse shell arguments """
     # create argparse instance
     try:
@@ -24,7 +23,9 @@ def parse_arguments(
         arg_parser = argparse.ArgumentParser(
             formatter_class = RawDescriptionHelpFormatter,
             description =
-                "Convert a hex string to all supported python encodings to identify potential text equivalents.")
+                "Convert a hex string to all supported python encodings to identify potential text equivalents.\n" \
+                "Provide hex string via [-i, --input] or <STDIN>"
+                )
         # general arguments
         arg_parser.add_argument(
             '-i', '--input',
@@ -61,11 +62,7 @@ def get_encodings() -> list:
     supported_encodings = sorted(supported_encodings)
     return supported_encodings
 
-def test_encodings_hex(
-        hex_value: str,
-        encoding_list: list,
-        show_all: bool = False
-):
+def test_encodings_hex(hex_value: str, encoding_list: list, show_all: bool = False):
     """ convert hex value to string using all supported encoding formats """
     successes = dict()
     failures = []
