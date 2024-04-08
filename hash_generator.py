@@ -667,15 +667,16 @@ def process_multi(
             file=sys.stderr)
         sys.exit(-1)
     # determine file segment details: errors handled by segment_file()
-    if input_file_lines >= settings.parallel:
+    if input_file_lines >= settings.parallel * 1000:
         segment_list = segment_file(file_name=settings.input_file, segments=settings.parallel, settings=settings)
     else:
-        #less lines in file than cores assigned
+        # less than 1000 lines assigned to a segment (core) adjusting.
         if settings.verbose:
             print(f"VERBOSE ({_function_name}):  input file contains " \
-                  f"{input_file_lines}, adjusting to {input_file_lines} workers.",
+                  f"{input_file_lines} lines, adjusting to {input_file_lines // 1000} worker(s).",
                 file=sys.stderr)
-        segment_list = segment_file(file_name=settings.input_file, segments=input_file_lines, settings=settings)
+        segment_count = input_file_lines // 1000
+        segment_list = segment_file(file_name=settings.input_file, segments=segment_count, settings=settings)
     # merge segment list with settings into a 2 item list matching hash_file_segment() arguments
     hash_file_segment_args = []
     for segment in segment_list:
@@ -842,7 +843,7 @@ def process_multi(
             print(f"Note: {success_lines - input_file_lines} more output lines than input file lines:")
             print("      Your input file may contain UTF-8 characters causing duplicate result lines")
             print("      such as control characters, line endings, or right-to-left printing ex: arabic")
-            print("      Consider processing without multithreading (--parallel / -r)")
+            print("      Consider processing without multithreading (--parallel=1 / -p 1)")
             print("      Alternately clean input file or remove duplicate lines from output file. ex:")
             print("         [sort --unique] sorted deduplicated output")
             print("         [rli or rling] unsorted deduplicated output")
