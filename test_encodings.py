@@ -2,11 +2,50 @@
 # -*- coding: UTF-8 -*-
 """ convert a hex string into all supported python codecs """
 
-import pkgutil
-import encodings
+# import modules
+try:
+    import argparse
+    from argparse import RawDescriptionHelpFormatter
+    import encodings
+    import pkgutil
+    import sys
+    from typing import Union
+except ImportError as import_error:
+    print(f"An error occurred importing libraries:\n {type(import_error).__name__} - {import_error}")
+    quit(-1)
+
+# define functions
+def parse_arguments(
+    ) -> Union[argparse.ArgumentParser, bool]:
+    """ Parse shell arguments """
+    # create argparse instance
+    try:
+        # define arguments
+        arg_parser = argparse.ArgumentParser(
+            formatter_class = RawDescriptionHelpFormatter,
+            description =
+                "Convert a hex string to all supported python encodings to identify potential text equivalents.")
+        # general arguments
+        arg_parser.add_argument(
+            '-i', '--input',
+            default = None,
+            type = str,
+            help = 'Hex string to convert with no leading 0x  e.g. [313233] not [0x313233]')
+        arg_parser.add_argument(
+            '-a', '--all',
+            action = 'store_true',
+            default = False,
+            help = "Show encodings that cannot fully decode the hex string. Characters that cannot be decoded are " \
+                   "replaced with � (U+FFFD)")
+        return arg_parser
+    except OSError as error:
+        print("ERROR: An error occurred parsing arguments:\n:" \
+            f"{type(error).__name__} - {error}",
+            file=sys.stderr)
+        return False
 
 def get_encodings() -> list:
-    """ get a list of supported encodings in the running version of python"""
+    """ get a list of supported encodings in the running version of python """
     false_positives = set([
         # encoding aliases
         'aliases',
@@ -27,24 +66,40 @@ def test_encodings_hex(
         hex_value: str,
         encoding_list: list,
         show_all: bool = False
-) -> dict:
+):
     """ convert hex value to string using all supported encoding formats """
     successes = dict()
     failures = []
     if show_all:
         for encoding in encoding_list:
-            successes[encoding] = bytes.fromhex(hex_value).decode(encoding=encoding, errors='replace')
+            successes[encoding] = bytes.fromhex(hex_value).decode(encoding = encoding, errors = 'replace')
     else:
         for encoding in encoding_list:
             try:
-                successes[encoding] = bytes.fromhex(hex_value).decode(encoding=encoding, errors='strict')
+                successes[encoding] = bytes.fromhex(hex_value).decode(encoding = encoding, errors = 'strict')
             except UnicodeDecodeError:
                 failures.append(encoding)
-    print("Successes:")
+    print(f"{'Encoding'.ljust(20)} | Value: ")
+    print("------------------------------")
     for key, value in successes.items():
-        print(f"Encoding: {str(key).ljust(20)}Value: [{value}]")
-    print("\n\nFailures:")
-    print(*failures, sep='\n')
+        print(f"{str(key).ljust(20)} | {value}")
 
-test_encodings_hex('d0bad0bed13fd13fd0bdd0bed0ba323031310d', get_encodings(), show_all=False)
-# test_encodings_hex('35454561', get_encodings())
+def main() -> int:
+    """ collect arguments, parse settings and init based on threading selection """
+    # collect shell arguments and process settings
+    arg_parser = parse_arguments()
+    arguments = arg_parser.parse_args()
+    # check if scripts expects data over <STDIN> and return help screen if TTY detected
+    if not arguments.input and sys.stdin.isatty():
+        arg_parser.print_help()
+        sys.exit(0)
+    # process job
+    if arguments.input:
+        test_encodings_hex(hex_value = arguments.input, encoding_list = get_encodings(), show_all=arguments.all)
+    else:
+        test_encodings_hex(hex_value = sys.stdin.readline(), encoding_list = get_encodings(), show_all=arguments.all)
+
+
+# auto start if called directly
+if __name__ == '__main__':
+    sys.exit(main())

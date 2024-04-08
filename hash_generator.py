@@ -10,7 +10,7 @@ to a text based separated file (TSV) with fields separated by -s / --separator [
           Characters not valid in UTF-8 will cause the line to be skipped
 """
 
-# import libraries
+# import modules
 try:
     import argparse
     from argparse import RawDescriptionHelpFormatter
